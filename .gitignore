@@ -1,0 +1,13 @@
+*.iml
+.gradle/
+.idea/
+local.properties
+build/
+app/build/
+captures/
+.DS_Store
+*.apk
+*.jks
+*.keystore
+release-secrets.txt
+dist/

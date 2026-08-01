@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">哔哩空降助手</string>
+    <string name="xposed_description">根据小电视空降助手数据提示并自动跳过 B 站视频中的特殊片段</string>
+    <string name="settings_title">哔哩空降助手</string>
+</resources>
