@@ -64,7 +64,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [[ -z "${sdk_root}" || ! -d "${sdk_root}" ]]; then
+            echo "ANDROID_SDK_ROOT/ANDROID_HOME does not point to an Android SDK." >&2
+            exit 1
+          fi
+
+          sdkmanager_path="$(command -v sdkmanager || true)"
+          if [[ -z "${sdkmanager_path}" ]]; then
+            sdkmanager_path="${sdk_root}/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          if [[ ! -x "${sdkmanager_path}" ]]; then
+            sdkmanager_path="$(find "${sdk_root}/cmdline-tools" -maxdepth 3 -type f -path '*/bin/sdkmanager' -print -quit 2>/dev/null || true)"
+          fi
+          if [[ -z "${sdkmanager_path}" || ! -x "${sdkmanager_path}" ]]; then
+            echo "sdkmanager was not found under ${sdk_root}/cmdline-tools." >&2
+            exit 1
+          fi
+
+          "${sdkmanager_path}" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Validate signing secrets
         shell: bash
