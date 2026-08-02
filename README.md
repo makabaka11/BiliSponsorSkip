@@ -9,6 +9,8 @@
 ## 功能
 
 - 打开视频后查询“小电视空降助手 / BilibiliSponsorBlock”的公开片段数据。
+- 在视频详情标题、竖屏播放器下方标题和横屏播放器上方标题前显示分类标签，并以网页端分类颜色标识。
+- 在普通播放器和 Story 播放器的竖屏、横屏进度条中，用分类颜色标出特殊片段区间。
 - 检测到已选择的片段时显示 Toast；实际跳过后显示分类和大致时长。
 - 默认只自动跳过“赞助/恰饭”，可在模块设置中启用其他分类：
   - 无偿/自我推广、三连/互动提醒、过场/开场动画、鸣谢/结束画面；
@@ -20,8 +22,9 @@
 
 1. Hook `PlayerMoss` 请求/响应，读取当前分 P 的 `bvid` 和 `cid`。
 2. 请求 `https://www.bsbsb.top/api/skipSegments/{SHA256(bvid)[0..4]}`，保留当前分 P、`actionType=skip` 且分类已启用的片段。
-3. 使用 DexKit 按稳定字符串动态定位播放器的状态、进度和 seek 方法，不依赖易变化的混淆类名。
+3. 使用 DexKit 按稳定字符串动态定位播放器的状态、进度、时长和 seek 方法，不依赖易变化的混淆类名。
 4. 播放器进入片段范围时调用原生 seek，跳转至片段末尾。
+5. 通过资源名、标题文本和播放器控件类型定位详情/竖屏/横屏标题及进度条；标题标签使用 CompoundDrawable，进度色块使用 ViewOverlay，不拦截宿主触摸事件。
 
 DexKit 的 native library 必须在 APK 中保持未压缩和页对齐，供 LSPosed 模块 ClassLoader 直接加载；请勿将 `jniLibs.useLegacyPackaging` 改回 `true`。
 
@@ -32,7 +35,7 @@ DexKit 的 native library 必须在 APK 中保持未压缩和页对齐，供 LSP
 | Android | 7.0（API 24）及以上 |
 | Hook 框架 | LSPosed，Xposed API 82 及以上 |
 | 模块包名 | `com.retrsoft.bilisponsorskip` |
-| 已真机验证 | 粉版 `tv.danmaku.bili` 9.4.0 |
+| 已真机验证 | 粉版 `tv.danmaku.bili` 9.4.0、9.5.0 |
 | 声明作用域 | 粉版、概念版、Play 版、HD 版 |
 
 其他版本虽然包含在作用域内，但播放器实现可能随客户端更新而变化。遇到问题请附带下方诊断日志。
@@ -67,6 +70,7 @@ adb shell tail -n 200 /sdcard/Android/data/tv.danmaku.bili/files/BiliSponsorSkip
 - 只有“检测到片段”但不跳过：检查日志中是否出现 `player hook installed`、`first player position received` 和 `skipped`。
 - 出现 `couldn't find libdexkit.so`：确认 APK 未被二次打包或压缩 native library。
 - 设置没有变化：重新打开视频；必要时强制停止并重新启动 B 站。
+- 标题有标签但进度条没有色块：轻点视频展开播放控制栏；查看日志是否出现 `progress marker attached`。
 
 ## 本地构建
 

@@ -2,6 +2,8 @@
 
 package com.retrsoft.bilisponsorskip
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.preference.ListPreference
 import android.preference.Preference
@@ -9,6 +11,7 @@ import android.preference.PreferenceActivity
 import android.preference.PreferenceCategory
 import android.preference.PreferenceScreen
 import android.preference.SwitchPreference
+import android.widget.Toast
 
 class SettingsActivity : PreferenceActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -24,6 +27,8 @@ class SettingsActivity : PreferenceActivity() {
         addPreference(toggle(SettingsContract.KEY_NOTIFY_FOUND, "发现片段时提示", "打开含特殊片段的视频后显示 Toast", true))
         addPreference(toggle(SettingsContract.KEY_NOTIFY_SKIPPED, "执行跳过后提示", "显示跳过的分类和时长", true))
         addPreference(toggle(SettingsContract.KEY_NOTIFY_FETCH_FAILURE, "请求失败时提示", "片段服务器暂时不可用时显示 Toast", false))
+        addPreference(toggle(SettingsContract.KEY_SHOW_TITLE_LABEL, "在标题前显示片段标签", "按已启用的片段分类显示彩色标签", true))
+        addPreference(toggle(SettingsContract.KEY_SHOW_PROGRESS_MARKERS, "在进度条标记片段", "使用分类颜色标出特殊片段所在区间", true))
         addPreference(toggle(SettingsContract.KEY_SKIP_ON_SEEK, "快进到片段中间时仍跳过", "对应网页端的“快进到片段中间时仍然跳过”", true))
         addPreference(ListPreference(this@SettingsActivity).apply {
             key = SettingsContract.KEY_MIN_DURATION
@@ -42,6 +47,11 @@ class SettingsActivity : PreferenceActivity() {
 
         addPreference(category("使用说明"))
         addPreference(info("修改设置后重新打开视频即可生效。LSPosed 中需启用模块并勾选对应的 B 站客户端。"))
+
+        addPreference(category("关于"))
+        addPreference(info("版本", installedVersionName()))
+        addPreference(link("作者", "github.com/makabaka11", "https://github.com/makabaka11"))
+        addPreference(link("联系", "ded000@retr0.xyz", "mailto:ded000@retr0.xyz"))
     }
 
     private fun category(title: String) = PreferenceCategory(this).apply { this.title = title }
@@ -58,6 +68,30 @@ class SettingsActivity : PreferenceActivity() {
         this.summary = summary
         isSelectable = false
     }
+
+    private fun info(title: String, summary: String) = Preference(this).apply {
+        this.title = title
+        this.summary = summary
+        isSelectable = false
+    }
+
+    private fun link(title: String, summary: String, uri: String) = Preference(this).apply {
+        this.title = title
+        this.summary = summary
+        setOnPreferenceClickListener {
+            runCatching {
+                val action = if (uri.startsWith("mailto:")) Intent.ACTION_SENDTO else Intent.ACTION_VIEW
+                startActivity(Intent(action, Uri.parse(uri)))
+            }.onFailure {
+                Toast.makeText(this@SettingsActivity, "无法打开链接", Toast.LENGTH_SHORT).show()
+            }
+            true
+        }
+    }
+
+    private fun installedVersionName(): String = runCatching {
+        packageManager.getPackageInfo(packageName, 0).versionName
+    }.getOrNull() ?: "未知"
 
     private fun categorySummary(category: String): String = when (category) {
         "sponsor" -> "付费推广、推荐和直接广告"

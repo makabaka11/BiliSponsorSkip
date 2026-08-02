@@ -8,6 +8,8 @@ internal data class SettingsSnapshot(
     val notifyFound: Boolean = true,
     val notifySkipped: Boolean = true,
     val notifyFetchFailure: Boolean = false,
+    val showTitleLabel: Boolean = true,
+    val showProgressMarkers: Boolean = true,
     val skipOnSeek: Boolean = true,
     val minDurationSeconds: Int = 0,
     val enabledCategories: Set<String> = setOf("sponsor"),
@@ -29,6 +31,8 @@ internal class SettingsRepository {
                 notifyFound = preferences.getBoolean(SettingsContract.KEY_NOTIFY_FOUND, true),
                 notifySkipped = preferences.getBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, true),
                 notifyFetchFailure = preferences.getBoolean(SettingsContract.KEY_NOTIFY_FETCH_FAILURE, false),
+                showTitleLabel = preferences.getBoolean(SettingsContract.KEY_SHOW_TITLE_LABEL, true),
+                showProgressMarkers = preferences.getBoolean(SettingsContract.KEY_SHOW_PROGRESS_MARKERS, true),
                 skipOnSeek = preferences.getBoolean(SettingsContract.KEY_SKIP_ON_SEEK, true),
                 minDurationSeconds = preferences.getString(SettingsContract.KEY_MIN_DURATION, "0")
                     ?.toIntOrNull()?.coerceAtLeast(0) ?: 0,
@@ -53,6 +57,8 @@ internal object SettingsContract {
     const val KEY_NOTIFY_FOUND = "notify_found"
     const val KEY_NOTIFY_SKIPPED = "notify_skipped"
     const val KEY_NOTIFY_FETCH_FAILURE = "notify_fetch_failure"
+    const val KEY_SHOW_TITLE_LABEL = "show_title_label"
+    const val KEY_SHOW_PROGRESS_MARKERS = "show_progress_markers"
     const val KEY_SKIP_ON_SEEK = "skip_on_seek"
     const val KEY_MIN_DURATION = "min_duration"
 

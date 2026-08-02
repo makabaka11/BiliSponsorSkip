@@ -16,6 +16,14 @@ internal class SkipController(
 ) {
     data class VideoKey(val bvid: String, val cid: String)
 
+    data class UiSnapshot(
+        val video: VideoKey?,
+        val segments: List<SponsorBlockClient.Segment>,
+        val durationMs: Int,
+        val showTitleLabel: Boolean,
+        val showProgressMarkers: Boolean,
+    )
+
     private val executor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "BiliSponsorSkip-network").apply { isDaemon = true }
     }
@@ -46,12 +54,16 @@ internal class SkipController(
     @Volatile
     private var suppressUntil = 0L
 
+    @Volatile
+    private var durationMs = 0
+
     fun updateVideo(bvid: String, cid: String) {
         if (!bvid.startsWith("BV") || cid.isBlank() || cid == "0") return
         val preferences = settings.refresh()
         if (!preferences.enabled || preferences.enabledCategories.isEmpty()) return
         val next = VideoKey(bvid.trim(), cid.trim())
         if (activeVideo.getAndSet(next) != next) {
+            durationMs = 0
             Log.d("video changed: ${next.bvid}+${next.cid}")
         }
         val cached = segmentCache[next]
@@ -61,6 +73,27 @@ internal class SkipController(
     fun bindPlayer(player: Any, fallbackSeekMethod: Method) {
         playerRef = WeakReference(player)
         seekMethod = fallbackSeekMethod
+    }
+
+    fun updateDuration(valueMs: Int) {
+        if (valueMs > 0) durationMs = valueMs
+    }
+
+    fun uiSnapshot(): UiSnapshot {
+        val video = activeVideo.get()
+        val preferences = settings.current
+        val segments = if (video != null && preferences.enabled) {
+            segmentCache[video]?.selectedBy(preferences).orEmpty()
+        } else {
+            emptyList()
+        }
+        return UiSnapshot(
+            video = video,
+            segments = segments,
+            durationMs = durationMs,
+            showTitleLabel = preferences.enabled && preferences.showTitleLabel,
+            showProgressMarkers = preferences.enabled && preferences.showProgressMarkers,
+        )
     }
 
     fun onPlayerHookInstalled(description: String) {

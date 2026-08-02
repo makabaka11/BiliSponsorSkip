@@ -20,15 +20,16 @@ class XposedInit : IXposedHookLoadPackage {
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     if (!initialized.compareAndSet(false, true)) return
-                    initialize(lpparam)
+                    initialize(lpparam, param.args[0] as Application)
                 }
             },
         )
     }
 
-    private fun initialize(lpparam: LoadPackageParam) {
+    private fun initialize(lpparam: LoadPackageParam, application: Application) {
         Log.d("initializing for ${lpparam.packageName} (${lpparam.appInfo.sourceDir})")
         val controller = SkipController(settings = SettingsRepository())
+        PlayerUiInjector(application, controller).start()
 
         runCatching {
             VideoIdentityHook(lpparam.classLoader, controller).install()

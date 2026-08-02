@@ -20,12 +20,14 @@ internal class PlayerHook(
     private data class Resolution(
         val seekMethod: Method,
         val positionMethods: List<Method>,
+        val durationMethods: List<Method>,
         val stateMethods: List<Method>,
     )
 
     private data class PollTarget(
         val player: WeakReference<Any>,
         val positionMethod: Method,
+        val durationMethod: Method?,
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -39,6 +41,7 @@ internal class PlayerHook(
             val resolution = resolvePlayerMethods(bridge)
             val seekMethod = resolution.seekMethod
             val positionMethods = resolution.positionMethods
+            val durationMethods = resolution.durationMethods
             val stateMethods = resolution.stateMethods
             val playerClass = seekMethod.declaringClass
 
@@ -46,7 +49,7 @@ internal class PlayerHook(
                 XposedBridge.hookMethod(positionMethod, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val position = (param.result as? Number)?.toInt() ?: return
-                        bindAndPoll(param.thisObject, seekMethod, positionMethod)
+                        bindAndPoll(param.thisObject, seekMethod, positionMethod, durationMethods.firstOrNull())
                         if (firstPositionLogged.compareAndSet(false, true)) {
                             Log.d("first player position received: $position ms")
                         }
@@ -58,7 +61,12 @@ internal class PlayerHook(
             stateMethods.forEach { stateMethod ->
                 XposedBridge.hookMethod(stateMethod, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        bindAndPoll(param.thisObject, seekMethod, positionMethods.first())
+                        bindAndPoll(
+                            param.thisObject,
+                            seekMethod,
+                            positionMethods.first(),
+                            durationMethods.firstOrNull(),
+                        )
                     }
                 })
             }
@@ -66,13 +74,19 @@ internal class PlayerHook(
             if (!playerClass.isInterface && !Modifier.isAbstract(playerClass.modifiers)) {
                 XposedBridge.hookAllConstructors(playerClass, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) {
-                        bindAndPoll(param.thisObject, seekMethod, positionMethods.first())
+                        bindAndPoll(
+                            param.thisObject,
+                            seekMethod,
+                            positionMethods.first(),
+                            durationMethods.firstOrNull(),
+                        )
                     }
                 })
             }
             Log.d(
                 "player resolved: ${playerClass.name}; seek=${seekMethod.name}${seekMethod.parameterTypes.contentToString()}; " +
                     "position=${positionMethods.joinToString { "${it.declaringClass.simpleName}.${it.name}" }}; " +
+                    "duration=${durationMethods.joinToString { "${it.declaringClass.simpleName}.${it.name}" }.ifEmpty { "none" }}; " +
                     "state=${stateMethods.joinToString { it.name }.ifEmpty { "none" }}",
             )
             controller.onPlayerHookInstalled(
@@ -112,7 +126,12 @@ internal class PlayerHook(
                 diagnostics += "${data.descriptor}: no concrete getCurrentPosition()"
                 null
             } else {
-                Resolution(method, positions, findStateMethods(bridge, method.declaringClass))
+                Resolution(
+                    method,
+                    positions,
+                    findDurationMethods(method.declaringClass),
+                    findStateMethods(bridge, method.declaringClass),
+                )
             }
         }
 
@@ -130,11 +149,18 @@ internal class PlayerHook(
             (method.paramTypeNames == listOf("int") || method.paramTypeNames == listOf("int", "boolean"))
 
     private fun findPositionMethods(playerClass: Class<*>): List<Method> {
+        return findTimeMethods(playerClass, "getCurrentPosition")
+    }
+
+    private fun findDurationMethods(playerClass: Class<*>): List<Method> =
+        findTimeMethods(playerClass, "getDuration")
+
+    private fun findTimeMethods(playerClass: Class<*>, name: String): List<Method> {
         val result = LinkedHashSet<Method>()
         var current: Class<*>? = playerClass
         while (current != null && current != Any::class.java) {
             current.declaredMethods.filterTo(result) { method ->
-                method.name == "getCurrentPosition" &&
+                method.name == name &&
                     method.parameterCount == 0 &&
                     !Modifier.isAbstract(method.modifiers) &&
                     (method.returnType == Int::class.javaPrimitiveType ||
@@ -157,9 +183,14 @@ internal class PlayerHook(
             runCatching { data.getMethodInstance(classLoader) }.getOrNull()
         }
 
-    private fun bindAndPoll(player: Any, seekMethod: Method, positionMethod: Method) {
+    private fun bindAndPoll(
+        player: Any,
+        seekMethod: Method,
+        positionMethod: Method,
+        durationMethod: Method?,
+    ) {
         controller.bindPlayer(player, seekMethod)
-        pollTarget.set(PollTarget(WeakReference(player), positionMethod))
+        pollTarget.set(PollTarget(WeakReference(player), positionMethod, durationMethod))
         if (pollStarted.compareAndSet(false, true)) mainHandler.post(pollRunnable)
     }
 
@@ -169,6 +200,8 @@ internal class PlayerHook(
             val player = target?.player?.get()
             if (target != null && player != null) {
                 runCatching {
+                    val duration = (target.durationMethod?.invokeUnwrapped(player) as? Number)?.toInt()
+                    if (duration != null) controller.updateDuration(duration)
                     val position = (target.positionMethod.invokeUnwrapped(player) as? Number)?.toInt()
                     if (position != null) controller.onPosition(position)
                 }.onFailure { error ->
