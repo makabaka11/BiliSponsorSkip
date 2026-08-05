@@ -1,5 +1,9 @@
 package com.retrsoft.bilisponsorskip
 
+import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
 import de.robv.android.xposed.XSharedPreferences
 
 internal data class SettingsSnapshot(
@@ -12,11 +16,14 @@ internal data class SettingsSnapshot(
     val showProgressMarkers: Boolean = true,
     val skipOnSeek: Boolean = true,
     val minDurationSeconds: Int = 0,
+    val showSubmissionButton: Boolean = false,
+    val userId: String = "",
     val enabledCategories: Set<String> = setOf("sponsor"),
 )
 
-internal class SettingsRepository {
+internal class SettingsRepository(private val application: Application) {
     private val preferences = XSharedPreferences(MODULE_PACKAGE)
+    private val mirrorPreferences = application.getSharedPreferences(MIRROR_PREFERENCES, Context.MODE_PRIVATE)
 
     @Volatile
     var current = SettingsSnapshot()
@@ -24,30 +31,82 @@ internal class SettingsRepository {
 
     fun refresh(): SettingsSnapshot {
         current = runCatching {
-            preferences.reload()
-            SettingsSnapshot(
-                enabled = preferences.getBoolean(SettingsContract.KEY_ENABLED, true),
-                autoSkip = preferences.getBoolean(SettingsContract.KEY_AUTO_SKIP, true),
-                notifyFound = preferences.getBoolean(SettingsContract.KEY_NOTIFY_FOUND, true),
-                notifySkipped = preferences.getBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, true),
-                notifyFetchFailure = preferences.getBoolean(SettingsContract.KEY_NOTIFY_FETCH_FAILURE, false),
-                showTitleLabel = preferences.getBoolean(SettingsContract.KEY_SHOW_TITLE_LABEL, true),
-                showProgressMarkers = preferences.getBoolean(SettingsContract.KEY_SHOW_PROGRESS_MARKERS, true),
-                skipOnSeek = preferences.getBoolean(SettingsContract.KEY_SKIP_ON_SEEK, true),
-                minDurationSeconds = preferences.getString(SettingsContract.KEY_MIN_DURATION, "0")
-                    ?.toIntOrNull()?.coerceAtLeast(0) ?: 0,
-                enabledCategories = SettingsContract.CATEGORIES
-                    .filterTo(linkedSetOf()) {
-                        preferences.getBoolean(SettingsContract.categoryKey(it), it == "sponsor")
-                    },
-            )
+            readFromMirror() ?:
+                readFromLegacyPreferences()
         }.onFailure { Log.e("failed to read module settings; using defaults", it) }
             .getOrDefault(SettingsSnapshot())
         return current
     }
 
+    init {
+        registerMirrorReceiver()
+    }
+
+    private fun registerMirrorReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action != SettingsContract.ACTION_UPDATE_SETTINGS) return
+                val values = intent.getBundleExtra(SettingsContract.EXTRA_SETTINGS) ?: return
+                val editor = mirrorPreferences.edit().clear().putBoolean(MIRROR_READY, true)
+                values.keySet().forEach { key ->
+                    when (val value = values.get(key)) {
+                        is Boolean -> editor.putBoolean(key, value)
+                        is String -> editor.putString(key, value)
+                    }
+                }
+                editor.apply()
+                current = readFromMirror() ?: SettingsSnapshot()
+                Log.d(
+                    "settings mirror updated: submission=${current.showSubmissionButton}; " +
+                        "userIdConfigured=${Identity.isValid(current.userId)}",
+                )
+            }
+        }
+        val filter = android.content.IntentFilter(SettingsContract.ACTION_UPDATE_SETTINGS)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            application.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            application.registerReceiver(receiver, filter)
+        }
+    }
+
+    private fun readFromMirror(): SettingsSnapshot? {
+        if (!mirrorPreferences.getBoolean(MIRROR_READY, false)) return null
+        return snapshot(mirrorPreferences::getBoolean) { key, default ->
+            mirrorPreferences.getString(key, default) ?: default
+        }
+    }
+
+    private fun readFromLegacyPreferences(): SettingsSnapshot {
+        preferences.reload()
+        return snapshot(preferences::getBoolean) { key, default -> preferences.getString(key, default) ?: default }
+    }
+
+    private fun snapshot(
+        getBoolean: (String, Boolean) -> Boolean,
+        getString: (String, String) -> String,
+    ) = SettingsSnapshot(
+        enabled = getBoolean(SettingsContract.KEY_ENABLED, true),
+        autoSkip = getBoolean(SettingsContract.KEY_AUTO_SKIP, true),
+        notifyFound = getBoolean(SettingsContract.KEY_NOTIFY_FOUND, true),
+        notifySkipped = getBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, true),
+        notifyFetchFailure = getBoolean(SettingsContract.KEY_NOTIFY_FETCH_FAILURE, false),
+        showTitleLabel = getBoolean(SettingsContract.KEY_SHOW_TITLE_LABEL, true),
+        showProgressMarkers = getBoolean(SettingsContract.KEY_SHOW_PROGRESS_MARKERS, true),
+        skipOnSeek = getBoolean(SettingsContract.KEY_SKIP_ON_SEEK, true),
+        minDurationSeconds = getString(SettingsContract.KEY_MIN_DURATION, "0")
+            .toIntOrNull()?.coerceAtLeast(0) ?: 0,
+        showSubmissionButton = getBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, false),
+        userId = getString(SettingsContract.KEY_USER_ID, "").trim(),
+        enabledCategories = SettingsContract.CATEGORIES.filterTo(linkedSetOf()) {
+            getBoolean(SettingsContract.categoryKey(it), it == "sponsor")
+        },
+    )
+
     private companion object {
         const val MODULE_PACKAGE = "com.retrsoft.bilisponsorskip"
+        const val MIRROR_PREFERENCES = "bili_sponsor_skip_settings"
+        const val MIRROR_READY = "mirror_ready"
     }
 }
 
@@ -61,6 +120,18 @@ internal object SettingsContract {
     const val KEY_SHOW_PROGRESS_MARKERS = "show_progress_markers"
     const val KEY_SKIP_ON_SEEK = "skip_on_seek"
     const val KEY_MIN_DURATION = "min_duration"
+    const val KEY_SHOW_SUBMISSION_BUTTON = "show_submission_button"
+    const val KEY_USER_ID = "user_id"
+    const val KEY_USERNAME = "username"
+    const val ACTION_UPDATE_SETTINGS = "com.retrsoft.bilisponsorskip.UPDATE_SETTINGS"
+    const val EXTRA_SETTINGS = "settings"
+
+    val TARGET_PACKAGES = setOf(
+        "tv.danmaku.bili",
+        "com.bilibili.app.blue",
+        "com.bilibili.app.in",
+        "tv.danmaku.bilibilihd",
+    )
 
     val CATEGORIES = listOf(
         "sponsor",

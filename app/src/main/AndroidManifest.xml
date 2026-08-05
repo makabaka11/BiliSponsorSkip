@@ -3,6 +3,13 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <queries>
+        <package android:name="tv.danmaku.bili" />
+        <package android:name="com.bilibili.app.blue" />
+        <package android:name="com.bilibili.app.in" />
+        <package android:name="tv.danmaku.bilibilihd" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:hasCode="true"

@@ -19,9 +19,13 @@ internal class SkipController(
     data class UiSnapshot(
         val video: VideoKey?,
         val segments: List<SponsorBlockClient.Segment>,
+        val allSegments: List<SponsorBlockClient.Segment>,
         val durationMs: Int,
+        val currentPositionMs: Int,
         val showTitleLabel: Boolean,
         val showProgressMarkers: Boolean,
+        val showSubmissionButton: Boolean,
+        val userId: String,
     )
 
     private val executor = Executors.newSingleThreadExecutor { task ->
@@ -35,6 +39,7 @@ internal class SkipController(
     private val notifiedVideos = ConcurrentHashMap.newKeySet<VideoKey>()
     private val diagnosticWatchdogs = ConcurrentHashMap.newKeySet<VideoKey>()
     private val reportedFailures = ConcurrentHashMap.newKeySet<String>()
+    private val reportedSettings = ConcurrentHashMap.newKeySet<String>()
 
     @Volatile
     private var playerHookReady = false
@@ -57,13 +62,19 @@ internal class SkipController(
     @Volatile
     private var durationMs = 0
 
+    @Volatile
+    private var currentPositionMs = 0
+
     fun updateVideo(bvid: String, cid: String) {
         if (!bvid.startsWith("BV") || cid.isBlank() || cid == "0") return
         val preferences = settings.refresh()
-        if (!preferences.enabled || preferences.enabledCategories.isEmpty()) return
+        val settingsSignature = "submission=${preferences.showSubmissionButton}; userIdConfigured=${Identity.isValid(preferences.userId)}"
+        if (reportedSettings.add(settingsSignature)) Log.d("settings refreshed: $settingsSignature")
+        if (!preferences.enabled) return
         val next = VideoKey(bvid.trim(), cid.trim())
         if (activeVideo.getAndSet(next) != next) {
             durationMs = 0
+            currentPositionMs = 0
             Log.d("video changed: ${next.bvid}+${next.cid}")
         }
         val cached = segmentCache[next]
@@ -90,10 +101,99 @@ internal class SkipController(
         return UiSnapshot(
             video = video,
             segments = segments,
+            allSegments = if (video != null && preferences.enabled) segmentCache[video].orEmpty() else emptyList(),
             durationMs = durationMs,
+            currentPositionMs = currentPositionMs,
             showTitleLabel = preferences.enabled && preferences.showTitleLabel,
             showProgressMarkers = preferences.enabled && preferences.showProgressMarkers,
+            showSubmissionButton = preferences.enabled && preferences.showSubmissionButton,
+            userId = preferences.userId,
         )
+    }
+
+    fun submitSegment(
+        category: String,
+        startMs: Int,
+        endMs: Int,
+        callback: (SponsorBlockClient.MutationResult) -> Unit,
+    ) {
+        val key = activeVideo.get()
+        val preferences = settings.refresh()
+        val validationError = when {
+            key == null -> "当前视频信息尚未就绪"
+            !Identity.isValid(preferences.userId) -> "请先在模块设置中填写至少 32 位的提交者 ID"
+            category !in SettingsContract.CATEGORIES -> "片段类别无效"
+            startMs < 0 || endMs <= startMs -> "片段起止时间无效"
+            else -> null
+        }
+        if (validationError != null || key == null) {
+            mainHandler.post { callback(SponsorBlockClient.MutationResult(false, -1, validationError.orEmpty())) }
+            return
+        }
+        executor.execute {
+            val result = client.submitSegment(
+                bvid = key.bvid,
+                cid = key.cid,
+                userId = preferences.userId,
+                category = category,
+                startMs = startMs,
+                endMs = endMs,
+                durationMs = durationMs,
+            )
+            if (result.successful) reloadSegments(key)
+            mainHandler.post { callback(result) }
+        }
+    }
+
+    fun vote(
+        segment: SponsorBlockClient.Segment,
+        type: Int,
+        callback: (SponsorBlockClient.MutationResult) -> Unit,
+    ) {
+        val key = activeVideo.get()
+        val preferences = settings.refresh()
+        val validationError = when {
+            key == null -> "当前视频信息尚未就绪"
+            !Identity.isValid(preferences.userId) -> "请先在模块设置中填写至少 32 位的提交者 ID"
+            segment.uuid.isBlank() -> "该片段没有可投票的 ID"
+            type !in 0..1 -> "投票类型无效"
+            else -> null
+        }
+        if (validationError != null || key == null) {
+            mainHandler.post { callback(SponsorBlockClient.MutationResult(false, -1, validationError.orEmpty())) }
+            return
+        }
+        executor.execute {
+            val result = client.vote(segment.uuid, preferences.userId, type)
+            if (result.successful) {
+                segmentCache.computeIfPresent(key) { _, segments ->
+                    segments.map {
+                        if (it.uuid == segment.uuid) it.copy(votes = it.votes + if (type == 1) 1 else -1) else it
+                    }
+                }
+            }
+            mainHandler.post { callback(result) }
+        }
+    }
+
+    fun refreshSegments(callback: (SponsorBlockClient.Result) -> Unit) {
+        val key = activeVideo.get()
+        if (key == null) {
+            mainHandler.post { callback(SponsorBlockClient.Result.Failure(false, "当前视频信息尚未就绪")) }
+            return
+        }
+        executor.execute {
+            val result = client.getSponsorSegments(key.bvid, key.cid)
+            if (result is SponsorBlockClient.Result.Success) {
+                segmentCache[key] = result.segments
+                retryAfter.remove(key)
+                Log.d("refreshed ${result.segments.size} special segment(s) for ${key.bvid}+${key.cid}")
+            }
+            mainHandler.post {
+                if (activeVideo.get() == key) callback(result)
+                else callback(SponsorBlockClient.Result.Failure(false, "刷新期间视频已切换"))
+            }
+        }
     }
 
     fun onPlayerHookInstalled(description: String) {
@@ -117,6 +217,7 @@ internal class SkipController(
 
     fun onPosition(positionMs: Int) {
         if (positionMs < 0) return
+        currentPositionMs = positionMs
         val now = System.currentTimeMillis()
         lastPositionAt = now
         if (now < suppressUntil || now - lastCheckAt < CHECK_INTERVAL_MS) return
@@ -185,6 +286,12 @@ internal class SkipController(
                 loading.remove(key)
             }
         }
+    }
+
+    private fun reloadSegments(key: VideoKey) {
+        segmentCache.remove(key)
+        retryAfter.remove(key)
+        ensureLoaded(key)
     }
 
     private fun seek(player: Any, positionMs: Int, segment: SponsorBlockClient.Segment): Boolean {

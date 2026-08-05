@@ -28,8 +28,9 @@ class XposedInit : IXposedHookLoadPackage {
 
     private fun initialize(lpparam: LoadPackageParam, application: Application) {
         Log.d("initializing for ${lpparam.packageName} (${lpparam.appInfo.sourceDir})")
-        val controller = SkipController(settings = SettingsRepository())
+        val controller = SkipController(settings = SettingsRepository(application))
         PlayerUiInjector(application, controller).start()
+        SubmissionUiInjector(application, controller).start()
 
         runCatching {
             VideoIdentityHook(lpparam.classLoader, controller).install()
