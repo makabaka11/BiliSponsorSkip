@@ -22,6 +22,10 @@ android {
     namespace = "com.retrsoft.bilisponsorskip"
     compileSdk = 35
 
+    sourceSets {
+        getByName("main").res.srcDir("../assets/android-res")
+    }
+
     defaultConfig {
         applicationId = "com.retrsoft.bilisponsorskip"
         minSdk = 24
