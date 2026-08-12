@@ -2,7 +2,7 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，发布日期以 GitHub Release 为准。
 
-## Unreleased
+## 1.2.1
 
 - 片段开始、片段结束、取消和提交按钮新增点击震动反馈，并在刷新片段、投票和提交期间显示转圈加载动画。
 - 模块设置页迁移到 Material 3 与 AndroidX Preference，支持日夜主题和 Android 12 及以上系统动态配色；优化选择类和输入类设置项的对齐与操作标识。
