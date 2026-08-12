@@ -12,12 +12,14 @@ import android.graphics.ColorFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
@@ -504,11 +506,16 @@ internal class SubmissionUiInjector(
                 like.alpha = if (alreadyVoted) 0.4f else 1f
                 dislike.alpha = if (alreadyVoted) 0.4f else 1f
                 fun vote(type: Int) {
+                    val activeButton = if (type == 1) like else dislike
+                    val activeUp = type == 1
                     like.isEnabled = false
                     dislike.isEnabled = false
                     like.alpha = 0.4f
                     dislike.alpha = 0.4f
+                    activeButton.alpha = 1f
+                    setIconLoading(activeButton, true, activeUp, dark)
                     controller.vote(segment, type) { result ->
+                        setIconLoading(activeButton, false, activeUp, dark)
                         if (result.successful) {
                             votedUuids += segment.uuid
                             votes.text = "票数 ${segment.votes + if (type == 1) 1 else -1}"
@@ -533,7 +540,9 @@ internal class SubmissionUiInjector(
         refresh.setOnClickListener {
             refresh.isEnabled = false
             refresh.text = "刷新中…"
+            setButtonLoading(refresh, true, dark)
             controller.refreshSegments { result ->
+                setButtonLoading(refresh, false, dark)
                 refresh.isEnabled = true
                 refresh.text = "刷新"
                 when (result) {
@@ -597,7 +606,7 @@ internal class SubmissionUiInjector(
             submit.isEnabled = draft.startMs != null && draft.endMs != null && draft.category.isNotBlank()
             submit.alpha = if (submit.isEnabled) 1f else 0.45f
         }
-        startButton.setOnClickListener {
+        setHapticClickListener(startButton) {
             draft.startMs = controller.uiSnapshot().currentPositionMs
             draft.endMs = null
             startState.text = "开始：${formatTime(requireNotNull(draft.startMs))}"
@@ -606,7 +615,7 @@ internal class SubmissionUiInjector(
             endState.visibility = View.VISIBLE
             updateSubmitState()
         }
-        endButton.setOnClickListener {
+        setHapticClickListener(endButton) {
             if (draft.startMs == null) {
                 toast(activity, "请先点击“片段现在开始”")
             } else {
@@ -619,23 +628,25 @@ internal class SubmissionUiInjector(
                 updateSubmitState()
             }
         }
-        cancel.setOnClickListener {
+        setHapticClickListener(cancel) {
             draft.startMs = null
             draft.endMs = null
             dialog.dismiss()
             toast(activity, "已取消本次提交")
         }
-        submit.setOnClickListener {
+        setHapticClickListener(submit) submitClick@{
             updateSubmitState()
-            val start = draft.startMs ?: return@setOnClickListener
-            val end = draft.endMs ?: return@setOnClickListener
+            val start = draft.startMs ?: return@submitClick
+            val end = draft.endMs ?: return@submitClick
             if (end <= start) {
                 toast(activity, "片段开始和结束时间不能相同")
-                return@setOnClickListener
+                return@submitClick
             }
             submit.isEnabled = false
             submit.text = "提交中…"
+            setButtonLoading(submit, true, dark, onPrimary = true)
             controller.submitSegment(draft.category, start, end) { result ->
+                setButtonLoading(submit, false, dark, onPrimary = true)
                 if (result.successful) {
                     draft.startMs = null
                     draft.endMs = null
@@ -724,6 +735,50 @@ internal class SubmissionUiInjector(
             activity.dp(9).toFloat(),
             activity.dp(1),
         )
+    }
+
+    private fun setHapticClickListener(view: View, action: () -> Unit) {
+        view.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            action()
+        }
+    }
+
+    private fun setButtonLoading(button: Button, loading: Boolean, dark: Boolean, onPrimary: Boolean = false) {
+        button.compoundDrawablesRelative.firstOrNull { it is LoadingDrawable }
+            ?.let { (it as LoadingDrawable).stop() }
+        if (!loading) {
+            button.setCompoundDrawablesRelative(null, null, null, null)
+            return
+        }
+        val color = when {
+            onPrimary -> Color.WHITE
+            dark -> Color.rgb(242, 242, 247)
+            else -> Color.rgb(54, 54, 58)
+        }
+        val density = button.resources.displayMetrics.density
+        val spinnerSize = (18f * density + 0.5f).toInt()
+        val spinner = LoadingDrawable(color, density).apply {
+            setBounds(0, 0, spinnerSize, spinnerSize)
+        }
+        button.compoundDrawablePadding = (8f * density + 0.5f).toInt()
+        button.setCompoundDrawablesRelative(spinner, null, null, null)
+        spinner.start()
+    }
+
+    private fun setIconLoading(button: ImageView, loading: Boolean, up: Boolean, dark: Boolean) {
+        (button.drawable as? LoadingDrawable)?.stop()
+        if (loading) {
+            val color = if (dark) Color.WHITE else Color.rgb(54, 54, 58)
+            val spinner = LoadingDrawable(color, button.resources.displayMetrics.density)
+            button.setImageDrawable(spinner)
+            spinner.start()
+        } else {
+            button.setImageDrawable(VoteIconDrawable(
+                up,
+                if (up) Color.rgb(52, 199, 89) else Color.rgb(255, 69, 58),
+            ))
+        }
     }
 
     private fun styleSelectedTab(button: Button, selected: Boolean, dark: Boolean) {
@@ -869,6 +924,51 @@ internal class SubmissionUiInjector(
     ) : android.widget.AdapterView.OnItemSelectedListener {
         override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) = onSelected()
         override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
+    }
+
+    private class LoadingDrawable(color: Int, density: Float) : Drawable(), Runnable {
+        private val intrinsicSize = (24f * density + 0.5f).toInt()
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            style = Paint.Style.STROKE
+            strokeWidth = 2.2f * density
+            strokeCap = Paint.Cap.ROUND
+        }
+        private val arc = RectF()
+        private var angle = 0f
+        private var running = false
+
+        fun start() {
+            if (running) return
+            running = true
+            invalidateSelf()
+            scheduleSelf(this, android.os.SystemClock.uptimeMillis() + 16L)
+        }
+
+        fun stop() {
+            running = false
+            unscheduleSelf(this)
+        }
+
+        override fun run() {
+            if (!running) return
+            angle = (angle + 12f) % 360f
+            invalidateSelf()
+            scheduleSelf(this, android.os.SystemClock.uptimeMillis() + 16L)
+        }
+
+        override fun draw(canvas: Canvas) {
+            val inset = paint.strokeWidth / 2f + 1f
+            arc.set(bounds.left + inset, bounds.top + inset, bounds.right - inset, bounds.bottom - inset)
+            canvas.drawArc(arc, angle, 250f, false, paint)
+        }
+
+        override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+        override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter }
+        override fun getIntrinsicWidth(): Int = intrinsicSize
+        override fun getIntrinsicHeight(): Int = intrinsicSize
+        @Deprecated("Deprecated in Android")
+        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
     }
 
     private class VoteIconDrawable(

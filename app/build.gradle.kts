@@ -87,6 +87,8 @@ android {
 dependencies {
     compileOnly("de.robv.android.xposed:api:82")
     implementation("org.luckypray:dexkit:2.2.0")
+    implementation("com.google.android.material:material:1.8.0")
+    implementation("androidx.preference:preference:1.2.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")

@@ -1,6 +1,8 @@
 package com.retrsoft.bilisponsorskip
 
 import android.app.AndroidAppHelper
+import android.content.ComponentName
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
@@ -240,6 +242,7 @@ internal class SkipController(
         if (seek(player, segment.endMs, segment)) {
             suppressUntil = now + SEEK_COOLDOWN_MS
             Log.d("skipped ${segment.startMs}..${segment.endMs} (${segment.uuid})")
+            recordLocalSkip((segment.endMs - positionMs).coerceAtLeast(0))
             if (preferences.notifySkipped) {
                 val durationSeconds = ((segment.endMs - segment.startMs) / 1000.0).toInt().coerceAtLeast(1)
                 showToast("已跳过：${segment.category.categoryLabel()}（约 ${durationSeconds} 秒）")
@@ -328,6 +331,21 @@ internal class SkipController(
     private fun showToast(message: String, duration: Int = Toast.LENGTH_SHORT) {
         val application = AndroidAppHelper.currentApplication() ?: return
         mainHandler.post { Toast.makeText(application, message, duration).show() }
+    }
+
+    private fun recordLocalSkip(savedDurationMs: Int) {
+        if (savedDurationMs <= 0) return
+        val application = AndroidAppHelper.currentApplication() ?: return
+        runCatching {
+            application.sendBroadcast(
+                Intent(SettingsContract.ACTION_RECORD_LOCAL_SKIP)
+                    .setComponent(ComponentName(
+                        SettingsContract.MODULE_PACKAGE,
+                        "${SettingsContract.MODULE_PACKAGE}.SkipStatsReceiver",
+                    ))
+                    .putExtra(SettingsContract.EXTRA_SAVED_DURATION_MS, savedDurationMs.toLong()),
+            )
+        }.onFailure { Log.e("failed to record local skip statistics", it) }
     }
 
     private fun notifySegmentsFound(

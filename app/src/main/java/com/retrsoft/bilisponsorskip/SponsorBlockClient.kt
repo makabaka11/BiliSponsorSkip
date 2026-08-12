@@ -8,6 +8,16 @@ import java.net.URI
 import java.security.MessageDigest
 
 internal class SponsorBlockClient {
+    data class UserContributionStats(
+        val viewCount: Long,
+        val minutesSaved: Double,
+    )
+
+    sealed interface UserStatsResult {
+        data class Success(val stats: UserContributionStats) : UserStatsResult
+        data class Failure(val message: String) : UserStatsResult
+    }
+
     data class Segment(
         val startMs: Int,
         val endMs: Int,
@@ -106,6 +116,47 @@ internal class SponsorBlockClient {
         val url = "$SERVER_URL/api/setUsername" +
             "?userID=${urlEncode(userId)}&username=${urlEncode(username)}"
         return executeMutation(url, body = null)
+    }
+
+    fun getUserContributionStats(userId: String): UserStatsResult {
+        val encoded = urlEncode(userId)
+        val views = executeUserStatRequest("$SERVER_URL/api/getViewsForUser?userID=$encoded", "viewCount")
+        if (views is NumericStatResult.Failure) return UserStatsResult.Failure(views.message)
+        val saved = executeUserStatRequest("$SERVER_URL/api/getSavedTimeForUser?userID=$encoded", "timeSaved")
+        if (saved is NumericStatResult.Failure) return UserStatsResult.Failure(saved.message)
+        return UserStatsResult.Success(UserContributionStats(
+            viewCount = (views as NumericStatResult.Success).value.toLong().coerceAtLeast(0L),
+            minutesSaved = (saved as NumericStatResult.Success).value.coerceAtLeast(0.0),
+        ))
+    }
+
+    private sealed interface NumericStatResult {
+        data class Success(val value: Double) : NumericStatResult
+        data class Failure(val message: String) : NumericStatResult
+    }
+
+    private fun executeUserStatRequest(url: String, field: String): NumericStatResult {
+        val connection = URI.create(url).toURL().openConnection() as HttpURLConnection
+        return try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 15_000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Origin", "BiliSponsorSkip")
+            connection.setRequestProperty("X-Ext-Version", CLIENT_VERSION)
+            when (val status = connection.responseCode) {
+                HttpURLConnection.HTTP_OK -> {
+                    val json = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    NumericStatResult.Success(JSONObject(json).optDouble(field, 0.0))
+                }
+                HttpURLConnection.HTTP_NOT_FOUND -> NumericStatResult.Success(0.0)
+                else -> NumericStatResult.Failure("HTTP $status")
+            }
+        } catch (error: Throwable) {
+            NumericStatResult.Failure(error.message ?: error.javaClass.simpleName)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     internal fun parseSegments(json: String, bvid: String, cid: String): List<Segment> {

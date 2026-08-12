@@ -111,6 +111,7 @@ internal class SettingsRepository(private val application: Application) {
 }
 
 internal object SettingsContract {
+    const val MODULE_PACKAGE = "com.retrsoft.bilisponsorskip"
     const val KEY_ENABLED = "enabled"
     const val KEY_AUTO_SKIP = "auto_skip"
     const val KEY_NOTIFY_FOUND = "notify_found"
@@ -124,7 +125,11 @@ internal object SettingsContract {
     const val KEY_USER_ID = "user_id"
     const val KEY_USERNAME = "username"
     const val ACTION_UPDATE_SETTINGS = "com.retrsoft.bilisponsorskip.UPDATE_SETTINGS"
+    const val ACTION_RECORD_LOCAL_SKIP = "com.retrsoft.bilisponsorskip.RECORD_LOCAL_SKIP"
     const val EXTRA_SETTINGS = "settings"
+    const val EXTRA_SAVED_DURATION_MS = "saved_duration_ms"
+    const val KEY_LOCAL_SKIP_COUNT = "local_skip_count"
+    const val KEY_LOCAL_SAVED_MS = "local_saved_ms"
 
     val TARGET_PACKAGES = setOf(
         "tv.danmaku.bili",
