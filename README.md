@@ -1,10 +1,6 @@
-<p align="center">
-  <img src="icon.png" width="128" alt="BiliSponsorSkip 图标">
-</p>
+# BiliSponsorSkip
 
-<h1 align="center">BiliSponsorSkip</h1>
-
-<p align="center">在 Android 版哔哩哔哩中提示并自动跳过社区标记的特殊片段。</p>
+在 Android 版哔哩哔哩中提示并自动跳过社区标记的特殊片段。
 
 ## 功能
 
