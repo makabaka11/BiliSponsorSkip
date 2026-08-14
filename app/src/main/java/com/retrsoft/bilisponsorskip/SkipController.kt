@@ -337,13 +337,19 @@ internal class SkipController(
         if (savedDurationMs <= 0) return
         val application = AndroidAppHelper.currentApplication() ?: return
         runCatching {
+            val intent = Intent(SettingsContract.ACTION_RECORD_LOCAL_SKIP)
+                .setComponent(ComponentName(
+                    SettingsContract.MODULE_PACKAGE,
+                    "${SettingsContract.MODULE_PACKAGE}.SkipStatsReceiver",
+                ))
+                .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES or Intent.FLAG_RECEIVER_FOREGROUND)
+                .putExtra(SettingsContract.EXTRA_SAVED_DURATION_MS, savedDurationMs.toLong())
             application.sendBroadcast(
-                Intent(SettingsContract.ACTION_RECORD_LOCAL_SKIP)
-                    .setComponent(ComponentName(
-                        SettingsContract.MODULE_PACKAGE,
-                        "${SettingsContract.MODULE_PACKAGE}.SkipStatsReceiver",
-                    ))
-                    .putExtra(SettingsContract.EXTRA_SAVED_DURATION_MS, savedDurationMs.toLong()),
+                intent,
+            )
+            Log.d(
+                "local skip statistics broadcast sent: " +
+                    "source=${application.packageName}, durationMs=$savedDurationMs",
             )
         }.onFailure { Log.e("failed to record local skip statistics", it) }
     }

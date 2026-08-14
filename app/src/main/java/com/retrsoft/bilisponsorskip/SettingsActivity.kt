@@ -34,12 +34,18 @@ import java.lang.ref.WeakReference
 import java.util.Locale
 
 class SettingsActivity : AppCompatActivity() {
+    @Volatile
+    private var userIdGenerationInProgress = false
+
     private val settingsChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         window?.decorView?.post {
             if (key == SettingsContract.KEY_LOCAL_SKIP_COUNT || key == SettingsContract.KEY_LOCAL_SAVED_MS) {
                 settingsFragment()?.refreshLocalStats()
             } else {
                 pushSettingsToTargets()
+                if (key == SettingsContract.KEY_USER_ID) {
+                    settingsFragment()?.refreshUserId()
+                }
             }
         }
     }
@@ -249,6 +255,16 @@ class SettingsActivity : AppCompatActivity() {
             localStats.summary = localStatsSummary(count, minutes)
         }
 
+        fun refreshUserId() {
+            val preference = findPreference<EditTextPreference>(SettingsContract.KEY_USER_ID) ?: return
+            val userId = host.modulePreferences()
+                .getString(SettingsContract.KEY_USER_ID, "")
+                .orEmpty()
+            preference.text = userId
+            preference.summary = host.userIdSummary(userId)
+            if (Identity.isValid(userId) && ::remoteStats.isInitialized) loadRemoteStats()
+        }
+
         private fun loadRemoteStats() {
             if (remoteLoading) return
             remoteLoading = true
@@ -377,9 +393,55 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun ensureUserId() {
         val preferences = modulePreferences()
-        if (!Identity.isValid(preferences.getString(SettingsContract.KEY_USER_ID, "").orEmpty())) {
-            preferences.edit().putString(SettingsContract.KEY_USER_ID, Identity.generate()).apply()
-        }
+        if (
+            Identity.isValid(preferences.getString(SettingsContract.KEY_USER_ID, "").orEmpty()) ||
+            userIdGenerationInProgress
+        ) return
+
+        userIdGenerationInProgress = true
+        Thread({
+            val client = SponsorBlockClient()
+            var failureMessage: String? = null
+            var cleanUserId: String? = null
+            for (attempt in 1..MAX_USER_ID_GENERATION_ATTEMPTS) {
+                val candidate = Identity.generate()
+                when (val result = client.getUserContributionStats(candidate)) {
+                    is SponsorBlockClient.UserStatsResult.Success -> {
+                        if (result.stats.viewCount == 0L && result.stats.minutesSaved == 0.0) {
+                            cleanUserId = candidate
+                            break
+                        }
+                        Log.d(
+                            "generated user ID was already in use; " +
+                                "attempt=$attempt, views=${result.stats.viewCount}, " +
+                                "minutes=${result.stats.minutesSaved}",
+                        )
+                    }
+                    is SponsorBlockClient.UserStatsResult.Failure -> {
+                        failureMessage = result.message
+                        break
+                    }
+                }
+            }
+            runOnUiThread {
+                userIdGenerationInProgress = false
+                if (
+                    cleanUserId != null &&
+                    !Identity.isValid(preferences.getString(SettingsContract.KEY_USER_ID, "").orEmpty())
+                ) {
+                    preferences.edit()
+                        .putString(SettingsContract.KEY_USER_ID, cleanUserId)
+                        .apply()
+                    window.decorView.post { settingsFragment()?.refreshUserId() }
+                    toast("已生成并确认全新的私有用户 ID")
+                } else if (cleanUserId == null) {
+                    settingsFragment()?.refreshUserId()
+                    val reason = failureMessage?.replace('\n', ' ')?.take(80)
+                        ?: "多次生成的 ID 均已有数据"
+                    toast("私有用户 ID 校验失败：$reason", Toast.LENGTH_LONG)
+                }
+            }
+        }, "BiliSponsorSkip-user-id").apply { isDaemon = true }.start()
     }
 
     private fun modulePreferences() = PreferenceManager.getDefaultSharedPreferences(this)
@@ -438,8 +500,11 @@ class SettingsActivity : AppCompatActivity() {
         }, "BiliSponsorSkip-username").apply { isDaemon = true }.start()
     }
 
-    private fun userIdSummary(value: String) = if (Identity.isValid(value))
-        "已设置（${value.take(4)}••••${value.takeLast(4)}）" else "未设置"
+    private fun userIdSummary(value: String) = when {
+        Identity.isValid(value) -> "已设置（${value.take(4)}••••${value.takeLast(4)}）"
+        userIdGenerationInProgress -> "正在生成并通过 API 校验…"
+        else -> "未设置"
+    }
     private fun usernameSummary(value: String) = value.trim().ifBlank { "未设置" }
     private fun toast(value: String, duration: Int = Toast.LENGTH_SHORT) = Toast.makeText(this, value, duration).show()
     private fun resolveThemeColor(attr: Int): Int = android.util.TypedValue().let { out ->
@@ -459,5 +524,9 @@ class SettingsActivity : AppCompatActivity() {
         "padding" -> "黑屏或与主体无关的填充画面"
         "music_offtopic" -> "音乐视频中的非音乐部分"
         else -> category
+    }
+
+    private companion object {
+        const val MAX_USER_ID_GENERATION_ATTEMPTS = 5
     }
 }
