@@ -1,5 +1,6 @@
 package com.retrsoft.bilisponsorskip
 
+import android.app.Activity
 import android.app.Application
 import android.app.Instrumentation
 import de.robv.android.xposed.IXposedHookLoadPackage
@@ -12,6 +13,8 @@ class XposedInit : IXposedHookLoadPackage {
     override fun handleLoadPackage(lpparam: LoadPackageParam) {
         if (lpparam.packageName !in TARGET_PACKAGES || lpparam.processName != lpparam.packageName) return
 
+        val uiLifecycle = UiLifecycleRelay()
+        installActivityLifecycleHooks(uiLifecycle)
         val initialized = AtomicBoolean(false)
         XposedHelpers.findAndHookMethod(
             Instrumentation::class.java,
@@ -20,17 +23,58 @@ class XposedInit : IXposedHookLoadPackage {
             object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     if (!initialized.compareAndSet(false, true)) return
-                    initialize(lpparam, param.args[0] as Application)
+                    initialize(lpparam, param.args[0] as Application, uiLifecycle)
                 }
             },
         )
     }
 
-    private fun initialize(lpparam: LoadPackageParam, application: Application) {
+    private fun installActivityLifecycleHooks(uiLifecycle: UiLifecycleRelay) {
+        XposedHelpers.findAndHookMethod(
+            Activity::class.java,
+            "onResume",
+            object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    uiLifecycle.onActivityResumed(param.thisObject as Activity)
+                }
+            },
+        )
+        XposedHelpers.findAndHookMethod(
+            Activity::class.java,
+            "onPause",
+            object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    uiLifecycle.onActivityPaused(param.thisObject as Activity)
+                }
+            },
+        )
+        XposedHelpers.findAndHookMethod(
+            Activity::class.java,
+            "onDestroy",
+            object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    uiLifecycle.onActivityDestroyed(param.thisObject as Activity)
+                }
+            },
+        )
+    }
+
+    private fun initialize(
+        lpparam: LoadPackageParam,
+        application: Application,
+        uiLifecycle: UiLifecycleRelay,
+    ) {
         Log.d("initializing for ${lpparam.packageName} (${lpparam.appInfo.sourceDir})")
-        val controller = SkipController(settings = SettingsRepository(application))
-        PlayerUiInjector(application, controller).start()
-        SubmissionUiInjector(application, controller).start()
+        val settings = SettingsRepository(application)
+        val controller = SkipController(
+            settings = settings,
+            localStatsStore = LocalSkipStatsStore(application),
+        )
+        settings.onLocalStatsSyncRequested = controller::syncLocalStats
+        controller.syncLocalStats()
+        val playerUi = PlayerUiInjector(application, controller).also(PlayerUiInjector::start)
+        val submissionUi = SubmissionUiInjector(application, controller).also(SubmissionUiInjector::start)
+        uiLifecycle.attach(playerUi, submissionUi)
 
         runCatching {
             VideoIdentityHook(lpparam.classLoader, controller).install()
@@ -38,11 +82,44 @@ class XposedInit : IXposedHookLoadPackage {
 
         Thread({
             runCatching {
-                PlayerHook(lpparam.appInfo.sourceDir, lpparam.classLoader, controller).install()
+                PlayerHook(
+                    lpparam.appInfo.sourceDir,
+                    lpparam.classLoader,
+                    controller,
+                    ensureDexKitLoaded = { DexKitNativeLoader.ensureLoaded(application) },
+                ).install()
             }.onFailure {
                 controller.reportPlayerFailure("Hook 安装", it)
             }
         }, "BiliSponsorSkip-dex").apply { isDaemon = true }.start()
+    }
+
+    private class UiLifecycleRelay {
+        @Volatile
+        private var playerUi: PlayerUiInjector? = null
+
+        @Volatile
+        private var submissionUi: SubmissionUiInjector? = null
+
+        fun attach(playerUi: PlayerUiInjector, submissionUi: SubmissionUiInjector) {
+            this.playerUi = playerUi
+            this.submissionUi = submissionUi
+        }
+
+        fun onActivityResumed(activity: Activity) {
+            playerUi?.onActivityResumed(activity)
+            submissionUi?.onActivityResumed(activity)
+        }
+
+        fun onActivityPaused(activity: Activity) {
+            playerUi?.onActivityPaused(activity)
+            submissionUi?.onActivityPaused(activity)
+        }
+
+        fun onActivityDestroyed(activity: Activity) {
+            playerUi?.onActivityDestroyed(activity)
+            submissionUi?.onActivityDestroyed(activity)
+        }
     }
 
     private companion object {

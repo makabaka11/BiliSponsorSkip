@@ -15,7 +15,6 @@ import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -42,7 +41,7 @@ import kotlin.math.min
 internal class SubmissionUiInjector(
     private val application: Application,
     private val controller: SkipController,
-) : Application.ActivityLifecycleCallbacks {
+) {
     private data class Draft(
         var video: SkipController.VideoKey? = null,
         var startMs: Int? = null,
@@ -74,7 +73,6 @@ internal class SubmissionUiInjector(
     private var immediateRenderScheduled = false
 
     fun start() {
-        application.registerActivityLifecycleCallbacks(this)
         mainHandler.post(renderRunnable)
         Log.d("submission UI injector started")
     }
@@ -163,12 +161,14 @@ internal class SubmissionUiInjector(
             expandedRegularGroup = parent
             parent.layoutParams = parent.layoutParams.apply { width = parent.width.coerceAtLeast(size) + size }
         }
+        val iconPadding = ((size - activity.dp(SUBMISSION_ICON_SIZE_DP)) / 2)
+            .coerceAtLeast(activity.dp(MIN_SUBMISSION_ICON_PADDING_DP))
         val injectedButton = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             contentDescription = "片段提交与投票"
             isClickable = true
             isFocusable = true
-            setPadding(activity.dp(11), activity.dp(11), activity.dp(11), activity.dp(11))
+            setPadding(iconPadding, iconPadding, iconPadding, iconPadding)
             setImageDrawable(loadUploadIcon())
             setOnClickListener { openMenu(activity) }
         }
@@ -250,8 +250,9 @@ internal class SubmissionUiInjector(
         val listenIcon = views.firstOrNull {
             it.isShown && it.contentDescription?.toString() == PORTRAIT_LISTEN_DESCRIPTION &&
                 isDescendant(it, actions)
-        } ?: return null
-        val listenContainer = directChildUnder(listenIcon, actions) ?: return null
+        } ?: return ButtonPlacement(actions, actions.childCount, false)
+        val listenContainer = directChildUnder(listenIcon, actions)
+            ?: return ButtonPlacement(actions, actions.childCount, false)
         return ButtonPlacement(actions, actions.indexOfChild(listenContainer), false, listenContainer)
     }
 
@@ -875,30 +876,25 @@ internal class SubmissionUiInjector(
 
     private fun Activity.dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
 
-    override fun onActivityResumed(activity: Activity) {
+    fun onActivityResumed(activity: Activity) {
         resumedActivity = WeakReference(activity)
         observeLayout(activity)
         requestImmediateRender()
     }
-    override fun onActivityPaused(activity: Activity) {
+    fun onActivityPaused(activity: Activity) {
         if (resumedActivity?.get() === activity) {
             resumedActivity = null
             stopObservingLayout()
             removeButton(dismissMenu = true)
         }
     }
-    override fun onActivityDestroyed(activity: Activity) {
+    fun onActivityDestroyed(activity: Activity) {
         if (resumedActivity?.get() === activity) {
             resumedActivity = null
             stopObservingLayout()
             removeButton(dismissMenu = true)
         }
     }
-    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
-    override fun onActivityStarted(activity: Activity) = Unit
-    override fun onActivityStopped(activity: Activity) = Unit
-    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
-
     private fun observeLayout(activity: Activity) {
         val decor = activity.window?.decorView ?: return
         if (observedDecor?.get() === decor) return
@@ -1066,6 +1062,8 @@ internal class SubmissionUiInjector(
 
     private companion object {
         const val RENDER_INTERVAL_MS = 750L
+        const val SUBMISSION_ICON_SIZE_DP = 24
+        const val MIN_SUBMISSION_ICON_PADDING_DP = 8
         const val HALF_SCREEN_SEEKBAR_ID = "bbplayer_halfscreen_seekbar"
         const val REGULAR_TOP_GROUP_ID = "top_end_widget_group"
         const val STORY_TOP_GROUP_ID = "top_default_group"

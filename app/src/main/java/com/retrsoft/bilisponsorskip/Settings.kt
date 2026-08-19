@@ -29,6 +29,9 @@ internal class SettingsRepository(private val application: Application) {
     var current = SettingsSnapshot()
         private set
 
+    @Volatile
+    var onLocalStatsSyncRequested: (() -> Unit)? = null
+
     fun refresh(): SettingsSnapshot {
         current = runCatching {
             readFromMirror() ?:
@@ -60,6 +63,7 @@ internal class SettingsRepository(private val application: Application) {
                     "settings mirror updated: submission=${current.showSubmissionButton}; " +
                         "userIdConfigured=${Identity.isValid(current.userId)}",
                 )
+                onLocalStatsSyncRequested?.invoke()
             }
         }
         val filter = android.content.IntentFilter(SettingsContract.ACTION_UPDATE_SETTINGS)
@@ -128,8 +132,14 @@ internal object SettingsContract {
     const val ACTION_RECORD_LOCAL_SKIP = "com.retrsoft.bilisponsorskip.RECORD_LOCAL_SKIP"
     const val EXTRA_SETTINGS = "settings"
     const val EXTRA_SAVED_DURATION_MS = "saved_duration_ms"
+    const val EXTRA_STATS_PACKAGE = "stats_package"
+    const val EXTRA_STATS_PROCESS = "stats_process"
+    const val EXTRA_STATS_GENERATION = "stats_generation"
+    const val EXTRA_STATS_COUNT = "stats_count"
+    const val EXTRA_STATS_SAVED_MS = "stats_saved_ms"
     const val KEY_LOCAL_SKIP_COUNT = "local_skip_count"
     const val KEY_LOCAL_SAVED_MS = "local_saved_ms"
+    const val KEY_LOCAL_STATS_SOURCE_PREFIX = "local_stats_source_v2_"
 
     val TARGET_PACKAGES = setOf(
         "tv.danmaku.bili",
@@ -151,6 +161,8 @@ internal object SettingsContract {
     )
 
     fun categoryKey(category: String) = "category_$category"
+
+    fun sourceStatsKey(source: String, value: String) = "$KEY_LOCAL_STATS_SOURCE_PREFIX${source}_$value"
 }
 
 internal fun String.categoryLabel(): String = when (this) {

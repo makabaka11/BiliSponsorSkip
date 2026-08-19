@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference
 internal class SkipController(
     private val client: SponsorBlockClient = SponsorBlockClient(),
     private val settings: SettingsRepository,
+    private val localStatsStore: LocalSkipStatsStore,
 ) {
     data class VideoKey(val bvid: String, val cid: String)
 
@@ -335,6 +336,15 @@ internal class SkipController(
 
     private fun recordLocalSkip(savedDurationMs: Int) {
         if (savedDurationMs <= 0) return
+        val snapshot = localStatsStore.record(savedDurationMs.toLong()) ?: return
+        sendLocalStatsSnapshot(snapshot)
+    }
+
+    fun syncLocalStats() {
+        localStatsStore.currentSnapshot()?.let(::sendLocalStatsSnapshot)
+    }
+
+    private fun sendLocalStatsSnapshot(snapshot: LocalSkipStatsSnapshot) {
         val application = AndroidAppHelper.currentApplication() ?: return
         runCatching {
             val intent = Intent(SettingsContract.ACTION_RECORD_LOCAL_SKIP)
@@ -343,15 +353,19 @@ internal class SkipController(
                     "${SettingsContract.MODULE_PACKAGE}.SkipStatsReceiver",
                 ))
                 .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES or Intent.FLAG_RECEIVER_FOREGROUND)
-                .putExtra(SettingsContract.EXTRA_SAVED_DURATION_MS, savedDurationMs.toLong())
+                .putExtra(SettingsContract.EXTRA_STATS_PACKAGE, snapshot.packageName)
+                .putExtra(SettingsContract.EXTRA_STATS_PROCESS, snapshot.processName)
+                .putExtra(SettingsContract.EXTRA_STATS_GENERATION, snapshot.generation)
+                .putExtra(SettingsContract.EXTRA_STATS_COUNT, snapshot.count)
+                .putExtra(SettingsContract.EXTRA_STATS_SAVED_MS, snapshot.savedMs)
             application.sendBroadcast(
                 intent,
             )
             Log.d(
-                "local skip statistics broadcast sent: " +
-                    "source=${application.packageName}, durationMs=$savedDurationMs",
+                "local skip statistics snapshot sent: source=${snapshot.packageName}/" +
+                    "${snapshot.processName}, count=${snapshot.count}, savedMs=${snapshot.savedMs}",
             )
-        }.onFailure { Log.e("failed to record local skip statistics", it) }
+        }.onFailure { Log.e("failed to sync local skip statistics", it) }
     }
 
     private fun notifySegmentsFound(

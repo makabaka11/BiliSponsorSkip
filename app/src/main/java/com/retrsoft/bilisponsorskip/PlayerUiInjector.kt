@@ -9,7 +9,6 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.SpannableStringBuilder
@@ -30,7 +29,7 @@ import kotlin.math.max
 internal class PlayerUiInjector(
     private val application: Application,
     private val controller: SkipController,
-) : Application.ActivityLifecycleCallbacks {
+) {
     private data class TitleState(
         val originalDrawables: Array<Drawable?>,
         val originalDrawablePadding: Int,
@@ -63,7 +62,6 @@ internal class PlayerUiInjector(
 
     fun start() {
         installExpandableTitleHook()
-        application.registerActivityLifecycleCallbacks(this)
         mainHandler.post(renderRunnable)
         Log.d("player UI injector started")
     }
@@ -521,30 +519,25 @@ internal class PlayerUiInjector(
         return false
     }
 
-    override fun onActivityResumed(activity: Activity) {
+    fun onActivityResumed(activity: Activity) {
         resumedActivity = WeakReference(activity)
         observeLayout(activity)
         requestImmediateRender()
     }
 
-    override fun onActivityPaused(activity: Activity) {
+    fun onActivityPaused(activity: Activity) {
         if (resumedActivity?.get() === activity) {
             resumedActivity = null
             stopObservingLayout()
         }
     }
 
-    override fun onActivityDestroyed(activity: Activity) {
+    fun onActivityDestroyed(activity: Activity) {
         if (resumedActivity?.get() === activity) {
             resumedActivity = null
             stopObservingLayout()
         }
     }
-
-    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
-    override fun onActivityStarted(activity: Activity) = Unit
-    override fun onActivityStopped(activity: Activity) = Unit
-    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
 
     private fun observeLayout(activity: Activity) {
         val decor = activity.window?.decorView ?: return
@@ -687,10 +680,11 @@ internal class PlayerUiInjector(
 
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val density = host.resources.displayMetrics.density
+        private val visibleRect = Rect()
         private var markers = emptyList<Marker>()
 
         fun update(segments: List<SponsorBlockClient.Segment>, durationMs: Int) {
-            markers = segments
+            val updatedMarkers = segments
                 .sortedByDescending { it.endMs - it.startMs }
                 .map { segment ->
                     Marker(
@@ -699,11 +693,14 @@ internal class PlayerUiInjector(
                         color = categoryColor(segment.category, preview = false),
                     )
                 }
+            if (markers == updatedMarkers) return
+            markers = updatedMarkers
             invalidateSelf()
         }
 
         override fun draw(canvas: Canvas) {
             if (bounds.width() <= 0 || bounds.height() <= 0) return
+            val visibilityAlpha = hostVisibilityAlpha() ?: return
             val left = host.paddingLeft.toFloat()
             val right = (bounds.width() - host.paddingRight).toFloat()
             val trackWidth = right - left
@@ -711,11 +708,11 @@ internal class PlayerUiInjector(
             val markerHeight = max(MARKER_HEIGHT_DP * density, bounds.height() * 0.08f)
                 .coerceAtMost(MAX_MARKER_HEIGHT_DP * density)
             val centerY = bounds.exactCenterY()
-            paint.alpha = MARKER_ALPHA
+            val markerAlpha = (MARKER_ALPHA * visibilityAlpha).toInt().coerceIn(0, MARKER_ALPHA)
 
             markers.forEach { marker ->
                 paint.color = marker.color
-                paint.alpha = MARKER_ALPHA
+                paint.alpha = markerAlpha
                 val markerLeft = left + trackWidth * marker.start
                 val markerRight = max(markerLeft + MIN_MARKER_WIDTH_DP * density, left + trackWidth * marker.end)
                     .coerceAtMost(right)
@@ -729,6 +726,21 @@ internal class PlayerUiInjector(
                     paint,
                 )
             }
+        }
+
+        private fun hostVisibilityAlpha(): Float? {
+            if (!host.isShown || host.width <= 0 || host.height <= 0) return null
+            visibleRect.setEmpty()
+            if (!host.getGlobalVisibleRect(visibleRect) || visibleRect.isEmpty) return null
+
+            var combinedAlpha = 1f
+            var current: View? = host
+            while (current != null) {
+                combinedAlpha *= current.alpha.coerceIn(0f, 1f)
+                if (combinedAlpha <= MIN_VISIBLE_ALPHA) return null
+                current = current.parent as? View
+            }
+            return combinedAlpha
         }
 
         override fun setAlpha(alpha: Int) {
@@ -754,7 +766,11 @@ internal class PlayerUiInjector(
         const val VIDEO_INTRO_CONTAINER_ID_NAME = "fl_intro_container"
         const val VIDEO_RECYCLER_ID_NAME = "recycler"
         const val TITLE_ARROW_ID_NAME = "arrow"
-        val PROGRESS_ID_NAMES = listOf("bbplayer_halfscreen_seekbar", "bbplayer_fullscreen_seekbar")
+        val PROGRESS_ID_NAMES = listOf(
+            "bbplayer_halfscreen_seekbar",
+            "bbplayer_fullscreen_seekbar",
+            "gemini_halfscreen_seekbar",
+        )
         const val PLAYER_SEEK_WIDGET_V3_CLASS =
             "com.bilibili.playerbizcommonv2.widget.seek.v3.PlayerSeekWidget3"
         const val PLAYER_SEEK_PACKAGE_PREFIX = "com.bilibili.playerbizcommonv2.widget.seek."
@@ -773,6 +789,7 @@ internal class PlayerUiInjector(
         const val MAX_MARKER_HEIGHT_DP = 5f
         const val MIN_MARKER_WIDTH_DP = 2f
         const val MARKER_ALPHA = 235
+        const val MIN_VISIBLE_ALPHA = 0.01f
 
         fun categoryColor(category: String, preview: Boolean): Int = Color.parseColor(
             when (category) {

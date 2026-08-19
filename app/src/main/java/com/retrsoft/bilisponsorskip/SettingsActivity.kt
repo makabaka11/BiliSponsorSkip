@@ -41,6 +41,8 @@ class SettingsActivity : AppCompatActivity() {
         window?.decorView?.post {
             if (key == SettingsContract.KEY_LOCAL_SKIP_COUNT || key == SettingsContract.KEY_LOCAL_SAVED_MS) {
                 settingsFragment()?.refreshLocalStats()
+            } else if (key?.startsWith(SettingsContract.KEY_LOCAL_STATS_SOURCE_PREFIX) == true) {
+                Unit
             } else {
                 pushSettingsToTargets()
                 if (key == SettingsContract.KEY_USER_ID) {
@@ -188,6 +190,7 @@ class SettingsActivity : AppCompatActivity() {
             addPreference(info("私有用户 ID 默认在本机随机生成；日常只需设置上方的公开用户名。"))
 
             dataCategory = RefreshPreferenceCategory(host) {
+                host.requestLocalStatsSync()
                 refreshLocalStats()
                 loadRemoteStats()
             }
@@ -457,6 +460,11 @@ class SettingsActivity : AppCompatActivity() {
                     .putExtra(SettingsContract.EXTRA_SETTINGS, values))
             }.onFailure { Log.e("failed to push settings to $targetPackage", it) }
         }
+    }
+
+    private fun requestLocalStatsSync() {
+        pushSettingsToTargets()
+        window.decorView.postDelayed({ settingsFragment()?.refreshLocalStats() }, 500L)
     }
 
     private fun settingsBundle(): Bundle {

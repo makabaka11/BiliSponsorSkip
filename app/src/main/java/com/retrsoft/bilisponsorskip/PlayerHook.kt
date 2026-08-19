@@ -2,6 +2,7 @@ package com.retrsoft.bilisponsorskip
 
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import org.luckypray.dexkit.DexKitBridge
@@ -16,6 +17,7 @@ internal class PlayerHook(
     private val apkPath: String,
     private val classLoader: ClassLoader,
     private val controller: SkipController,
+    private val ensureDexKitLoaded: () -> Unit,
 ) {
     private data class Resolution(
         val seekMethod: Method,
@@ -36,64 +38,105 @@ internal class PlayerHook(
     private val firstPositionLogged = AtomicBoolean(false)
 
     fun install() {
-        System.loadLibrary("dexkit")
-        DexKitBridge.create(apkPath).use { bridge ->
-            val resolution = resolvePlayerMethods(bridge)
-            val seekMethod = resolution.seekMethod
-            val positionMethods = resolution.positionMethods
-            val durationMethods = resolution.durationMethods
-            val stateMethods = resolution.stateMethods
-            val playerClass = seekMethod.declaringClass
-
-            positionMethods.forEach { positionMethod ->
-                XposedBridge.hookMethod(positionMethod, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        val position = (param.result as? Number)?.toInt() ?: return
-                        bindAndPoll(param.thisObject, seekMethod, positionMethod, durationMethods.firstOrNull())
-                        if (firstPositionLogged.compareAndSet(false, true)) {
-                            Log.d("first player position received: $position ms")
-                        }
-                        controller.onPosition(position)
-                    }
-                })
+        val knownResolution = resolveKnown940PlayerMethods()
+        val resolution = knownResolution ?: run {
+            ensureDexKitLoaded()
+            DexKitBridge.create(apkPath).use { bridge ->
+                if (!Process.is64Bit()) {
+                    bridge.setThreadNum(2)
+                    bridge.setMaxConcurrentQueries(1)
+                    Log.d("DexKit constrained for 32-bit process: threads=2; concurrentQueries=1")
+                }
+                resolvePlayerMethods(bridge)
             }
-
-            stateMethods.forEach { stateMethod ->
-                XposedBridge.hookMethod(stateMethod, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        bindAndPoll(
-                            param.thisObject,
-                            seekMethod,
-                            positionMethods.first(),
-                            durationMethods.firstOrNull(),
-                        )
-                    }
-                })
-            }
-
-            if (!playerClass.isInterface && !Modifier.isAbstract(playerClass.modifiers)) {
-                XposedBridge.hookAllConstructors(playerClass, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        bindAndPoll(
-                            param.thisObject,
-                            seekMethod,
-                            positionMethods.first(),
-                            durationMethods.firstOrNull(),
-                        )
-                    }
-                })
-            }
-            Log.d(
-                "player resolved: ${playerClass.name}; seek=${seekMethod.name}${seekMethod.parameterTypes.contentToString()}; " +
-                    "position=${positionMethods.joinToString { "${it.declaringClass.simpleName}.${it.name}" }}; " +
-                    "duration=${durationMethods.joinToString { "${it.declaringClass.simpleName}.${it.name}" }.ifEmpty { "none" }}; " +
-                    "state=${stateMethods.joinToString { it.name }.ifEmpty { "none" }}",
-            )
-            controller.onPlayerHookInstalled(
-                "${playerClass.name}; seek=${seekMethod.name}; state=" +
-                    stateMethods.joinToString { it.name }.ifEmpty { "none" },
-            )
         }
+        installResolution(resolution)
+    }
+
+    private fun installResolution(resolution: Resolution) {
+        val seekMethod = resolution.seekMethod
+        val positionMethods = resolution.positionMethods
+        val durationMethods = resolution.durationMethods
+        val stateMethods = resolution.stateMethods
+        val playerClass = seekMethod.declaringClass
+
+        positionMethods.forEach { positionMethod ->
+            XposedBridge.hookMethod(positionMethod, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val position = (param.result as? Number)?.toInt() ?: return
+                    bindAndPoll(param.thisObject, seekMethod, positionMethod, durationMethods.firstOrNull())
+                    if (firstPositionLogged.compareAndSet(false, true)) {
+                        Log.d("first player position received: $position ms")
+                    }
+                    controller.onPosition(position)
+                }
+            })
+        }
+
+        stateMethods.forEach { stateMethod ->
+            XposedBridge.hookMethod(stateMethod, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    bindAndPoll(
+                        param.thisObject,
+                        seekMethod,
+                        positionMethods.first(),
+                        durationMethods.firstOrNull(),
+                    )
+                }
+            })
+        }
+
+        if (!playerClass.isInterface && !Modifier.isAbstract(playerClass.modifiers)) {
+            XposedBridge.hookAllConstructors(playerClass, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    bindAndPoll(
+                        param.thisObject,
+                        seekMethod,
+                        positionMethods.first(),
+                        durationMethods.firstOrNull(),
+                    )
+                }
+            })
+        }
+        Log.d(
+            "player resolved: ${playerClass.name}; seek=${seekMethod.name}${seekMethod.parameterTypes.contentToString()}; " +
+                "position=${positionMethods.joinToString { "${it.declaringClass.simpleName}.${it.name}" }}; " +
+                "duration=${durationMethods.joinToString { "${it.declaringClass.simpleName}.${it.name}" }.ifEmpty { "none" }}; " +
+                "state=${stateMethods.joinToString { it.name }.ifEmpty { "none" }}",
+        )
+        controller.onPlayerHookInstalled(
+            "${playerClass.name}; seek=${seekMethod.name}; state=" +
+                stateMethods.joinToString { it.name }.ifEmpty { "none" },
+        )
+    }
+
+    private fun resolveKnown940PlayerMethods(): Resolution? {
+        val playerClass = runCatching {
+            Class.forName(KNOWN_940_PLAYER_CLASS, false, classLoader)
+        }.getOrNull() ?: return null
+        val seekMethod = declaredMethodsInHierarchy(playerClass).firstOrNull { method ->
+            method.name == "seekTo" &&
+                method.returnType == Void.TYPE &&
+                !Modifier.isStatic(method.modifiers) &&
+                method.parameterTypes.contentEquals(
+                    arrayOf(Int::class.javaPrimitiveType!!, Boolean::class.javaPrimitiveType!!),
+                )
+        } ?: return null
+        val positionMethods = findPositionMethods(playerClass)
+        if (positionMethods.isEmpty()) return null
+        val stateMethods = declaredMethodsInHierarchy(playerClass).filter { method ->
+            method.name == KNOWN_940_STATE_METHOD &&
+                method.returnType == Void.TYPE &&
+                !Modifier.isStatic(method.modifiers) &&
+                method.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType!!))
+        }
+        Log.d("using known 9.4.0 player resolution without DexKit: ${playerClass.name}")
+        return Resolution(
+            seekMethod,
+            positionMethods,
+            findDurationMethods(playerClass),
+            stateMethods,
+        )
     }
 
     private fun resolvePlayerMethods(bridge: DexKitBridge): Resolution {
@@ -156,16 +199,20 @@ internal class PlayerHook(
         findTimeMethods(playerClass, "getDuration")
 
     private fun findTimeMethods(playerClass: Class<*>, name: String): List<Method> {
+        return declaredMethodsInHierarchy(playerClass).filter { method ->
+            method.name == name &&
+                method.parameterCount == 0 &&
+                !Modifier.isAbstract(method.modifiers) &&
+                (method.returnType == Int::class.javaPrimitiveType ||
+                    method.returnType == Long::class.javaPrimitiveType)
+        }
+    }
+
+    private fun declaredMethodsInHierarchy(playerClass: Class<*>): List<Method> {
         val result = LinkedHashSet<Method>()
         var current: Class<*>? = playerClass
         while (current != null && current != Any::class.java) {
-            current.declaredMethods.filterTo(result) { method ->
-                method.name == name &&
-                    method.parameterCount == 0 &&
-                    !Modifier.isAbstract(method.modifiers) &&
-                    (method.returnType == Int::class.javaPrimitiveType ||
-                        method.returnType == Long::class.javaPrimitiveType)
-            }
+            result += current.declaredMethods
             current = current.superclass
         }
         return result.toList()
@@ -219,5 +266,7 @@ internal class PlayerHook(
 
     private companion object {
         const val POLL_INTERVAL_MS = 500L
+        const val KNOWN_940_PLAYER_CLASS = "Nk1.S"
+        const val KNOWN_940_STATE_METHOD = "q"
     }
 }
