@@ -2,7 +2,7 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，发布日期以 GitHub Release 为准。
 
-## Unreleased
+## 1.2.2
 
 - 适配了32 位粉版8.75 和9.4.0版
 - 修复了已跳过片段和时间记录失败的问题
