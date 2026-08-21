@@ -70,6 +70,13 @@ class XposedInit : IXposedHookLoadPackage {
             settings = settings,
             localStatsStore = LocalSkipStatsStore(application),
         )
+        val playerNotice = BiliPlayerNoticeBridge(
+            apkPath = lpparam.appInfo.sourceDir,
+            packageName = lpparam.packageName,
+            classLoader = lpparam.classLoader,
+            ensureDexKitLoaded = { DexKitNativeLoader.ensureLoaded(application) },
+        )
+        controller.bindPlayerNotice(playerNotice)
         settings.onLocalStatsSyncRequested = controller::syncLocalStats
         controller.syncLocalStats()
         val playerUi = PlayerUiInjector(application, controller).also(PlayerUiInjector::start)
@@ -91,6 +98,8 @@ class XposedInit : IXposedHookLoadPackage {
             }.onFailure {
                 controller.reportPlayerFailure("Hook 安装", it)
             }
+            runCatching { playerNotice.install() }
+                .onFailure { Log.e("failed to install interactive player notice bridge", it) }
         }, "BiliSponsorSkip-dex").apply { isDaemon = true }.start()
     }
 

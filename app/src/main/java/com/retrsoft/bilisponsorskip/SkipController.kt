@@ -68,6 +68,12 @@ internal class SkipController(
     @Volatile
     private var currentPositionMs = 0
 
+    @Volatile
+    private var playerNotice: InteractivePlayerNotice? = null
+
+    @Volatile
+    private var activeManualNoticeKey: String? = null
+
     fun updateVideo(bvid: String, cid: String) {
         if (!bvid.startsWith("BV") || cid.isBlank() || cid == "0") return
         val preferences = settings.refresh()
@@ -78,6 +84,7 @@ internal class SkipController(
         if (activeVideo.getAndSet(next) != next) {
             durationMs = 0
             currentPositionMs = 0
+            clearManualSkipNotice()
             Log.d("video changed: ${next.bvid}+${next.cid}")
         }
         val cached = segmentCache[next]
@@ -89,6 +96,10 @@ internal class SkipController(
         seekMethod = fallbackSeekMethod
     }
 
+    fun bindPlayerNotice(notice: InteractivePlayerNotice) {
+        playerNotice = notice
+    }
+
     fun updateDuration(valueMs: Int) {
         if (valueMs > 0) durationMs = valueMs
     }
@@ -97,7 +108,7 @@ internal class SkipController(
         val video = activeVideo.get()
         val preferences = settings.current
         val segments = if (video != null && preferences.enabled) {
-            segmentCache[video]?.selectedBy(preferences).orEmpty()
+            segmentCache[video]?.activeBy(preferences).orEmpty()
         } else {
             emptyList()
         }
@@ -228,12 +239,30 @@ internal class SkipController(
 
         val key = activeVideo.get() ?: return
         val preferences = settings.current
-        if (!preferences.enabled || !preferences.autoSkip) return
-        val segments = segmentCache[key]?.selectedBy(preferences) ?: run {
+        if (!preferences.enabled) return
+        val segments = segmentCache[key]?.activeBy(preferences) ?: run {
             ensureLoaded(key)
             return
         }
-        val segment = segments.firstOrNull { positionMs >= it.startMs && positionMs < it.endMs } ?: return
+        val segment = segments.firstOrNull {
+            preferences.categoryMode(it.category) == CategoryMode.AUTO_SKIP &&
+                positionMs >= it.startMs && positionMs < it.endMs
+        }
+        if (segment == null) {
+            val manualSegment = segments.firstOrNull {
+                preferences.categoryMode(it.category) == CategoryMode.MANUAL_SKIP &&
+                    positionMs >= it.startMs && positionMs < it.endMs
+            }
+            if (manualSegment == null ||
+                (!preferences.skipOnSeek && positionMs > manualSegment.startMs + SEGMENT_START_WINDOW_MS)
+            ) {
+                clearManualSkipNotice()
+            } else {
+                showManualSkipNotice(key, manualSegment, positionMs)
+            }
+            return
+        }
+        clearManualSkipNotice()
         if (!preferences.skipOnSeek && positionMs > segment.startMs + SEGMENT_START_WINDOW_MS) return
         val player = playerRef?.get() ?: run {
             reportPlayerFailure("播放器实例", detail = "已进入片段，但播放器引用为空")
@@ -249,6 +278,56 @@ internal class SkipController(
                 showToast("已跳过：${segment.category.categoryLabel()}（约 ${durationSeconds} 秒）")
             }
         }
+    }
+
+    private fun showManualSkipNotice(
+        key: VideoKey,
+        segment: SponsorBlockClient.Segment,
+        positionMs: Int,
+    ) {
+        val noticeKey = "${key.bvid}:${key.cid}:${segment.uuid}:${segment.startMs}:${segment.endMs}"
+        if (activeManualNoticeKey == noticeKey) return
+        clearManualSkipNotice()
+        activeManualNoticeKey = noticeKey
+        val remainingMs = (segment.endMs - positionMs).coerceAtLeast(1_000)
+        val shown = playerNotice?.showAction(
+            message = "${segment.category.categoryLabel()}片段",
+            actionText = "跳过",
+            durationMs = remainingMs.toLong().coerceIn(3_000L, 100_000L),
+            onAction = { skipManualSegment(key, segment) },
+            onDismiss = {},
+        ) == true
+        if (!shown) {
+            Log.e("interactive player notice unavailable for manual segment: ${segment.category}")
+            showToast("检测到可手动跳过的${segment.category.categoryLabel()}片段")
+        }
+    }
+
+    private fun skipManualSegment(key: VideoKey, segment: SponsorBlockClient.Segment) {
+        mainHandler.post {
+            if (activeVideo.get() != key || currentPositionMs !in segment.startMs until segment.endMs) return@post
+            val player = playerRef?.get() ?: run {
+                reportPlayerFailure("播放器实例", detail = "手动跳过时播放器引用为空")
+                return@post
+            }
+            val position = currentPositionMs
+            if (seek(player, segment.endMs, segment)) {
+                suppressUntil = System.currentTimeMillis() + SEEK_COOLDOWN_MS
+                recordLocalSkip((segment.endMs - position).coerceAtLeast(0))
+                Log.d("manually skipped ${segment.startMs}..${segment.endMs} (${segment.uuid})")
+                if (settings.current.notifySkipped) {
+                    val durationSeconds = ((segment.endMs - segment.startMs) / 1000.0).toInt().coerceAtLeast(1)
+                    showToast("已手动跳过：${segment.category.categoryLabel()}（约 ${durationSeconds} 秒）")
+                }
+            }
+            activeManualNoticeKey = null
+        }
+    }
+
+    private fun clearManualSkipNotice() {
+        if (activeManualNoticeKey == null) return
+        activeManualNoticeKey = null
+        playerNotice?.dismiss()
     }
 
     private fun ensureLoaded(key: VideoKey) {
@@ -373,7 +452,7 @@ internal class SkipController(
         segments: List<SponsorBlockClient.Segment>,
         preferences: SettingsSnapshot,
     ) {
-        val selected = segments.selectedBy(preferences)
+        val selected = segments.activeBy(preferences)
         if (key == activeVideo.get() && preferences.enabled && selected.isNotEmpty()) {
             schedulePlayerDiagnostic(key)
         }
@@ -415,12 +494,13 @@ internal class SkipController(
         return text.replace('\n', ' ').take(MAX_DIAGNOSTIC_TEXT_LENGTH)
     }
 
-    private fun List<SponsorBlockClient.Segment>.selectedBy(
+    private fun List<SponsorBlockClient.Segment>.activeBy(
         preferences: SettingsSnapshot,
     ): List<SponsorBlockClient.Segment> {
         val minimumMs = preferences.minDurationSeconds * 1000
         return filter { segment ->
-            segment.category in preferences.enabledCategories && segment.endMs - segment.startMs >= minimumMs
+            preferences.categoryMode(segment.category) != CategoryMode.DISABLED &&
+                segment.endMs - segment.startMs >= minimumMs
         }
     }
 

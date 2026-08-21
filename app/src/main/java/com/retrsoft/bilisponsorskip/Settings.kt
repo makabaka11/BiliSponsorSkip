@@ -1,5 +1,6 @@
 package com.retrsoft.bilisponsorskip
 
+import android.annotation.SuppressLint
 import android.app.Application
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -8,7 +9,6 @@ import de.robv.android.xposed.XSharedPreferences
 
 internal data class SettingsSnapshot(
     val enabled: Boolean = true,
-    val autoSkip: Boolean = true,
     val notifyFound: Boolean = true,
     val notifySkipped: Boolean = true,
     val notifyFetchFailure: Boolean = false,
@@ -18,8 +18,23 @@ internal data class SettingsSnapshot(
     val minDurationSeconds: Int = 0,
     val showSubmissionButton: Boolean = false,
     val userId: String = "",
-    val enabledCategories: Set<String> = setOf("sponsor"),
+    val categoryModes: Map<String, CategoryMode> = SettingsContract.DEFAULT_CATEGORY_MODES,
 )
+
+internal enum class CategoryMode(val persistedValue: String) {
+    DISABLED("disabled"),
+    SHOW_OVERLAY("show_overlay"),
+    MANUAL_SKIP("manual_skip"),
+    AUTO_SKIP("auto_skip");
+
+    companion object {
+        fun fromPersisted(value: String?, default: CategoryMode): CategoryMode =
+            entries.firstOrNull { it.persistedValue == value } ?: default
+    }
+}
+
+internal fun SettingsSnapshot.categoryMode(category: String): CategoryMode =
+    categoryModes[category] ?: CategoryMode.DISABLED
 
 internal class SettingsRepository(private val application: Application) {
     private val preferences = XSharedPreferences(MODULE_PACKAGE)
@@ -45,6 +60,7 @@ internal class SettingsRepository(private val application: Application) {
         registerMirrorReceiver()
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private fun registerMirrorReceiver() {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -76,22 +92,28 @@ internal class SettingsRepository(private val application: Application) {
 
     private fun readFromMirror(): SettingsSnapshot? {
         if (!mirrorPreferences.getBoolean(MIRROR_READY, false)) return null
-        return snapshot(mirrorPreferences::getBoolean) { key, default ->
-            mirrorPreferences.getString(key, default) ?: default
-        }
+        return snapshot(
+            mirrorPreferences::getBoolean,
+            { key, default -> mirrorPreferences.getString(key, default) ?: default },
+            mirrorPreferences::contains,
+        )
     }
 
     private fun readFromLegacyPreferences(): SettingsSnapshot {
         preferences.reload()
-        return snapshot(preferences::getBoolean) { key, default -> preferences.getString(key, default) ?: default }
+        return snapshot(
+            preferences::getBoolean,
+            { key, default -> preferences.getString(key, default) ?: default },
+            preferences::contains,
+        )
     }
 
     private fun snapshot(
         getBoolean: (String, Boolean) -> Boolean,
         getString: (String, String) -> String,
+        contains: (String) -> Boolean,
     ) = SettingsSnapshot(
         enabled = getBoolean(SettingsContract.KEY_ENABLED, true),
-        autoSkip = getBoolean(SettingsContract.KEY_AUTO_SKIP, true),
         notifyFound = getBoolean(SettingsContract.KEY_NOTIFY_FOUND, true),
         notifySkipped = getBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, true),
         notifyFetchFailure = getBoolean(SettingsContract.KEY_NOTIFY_FETCH_FAILURE, false),
@@ -102,8 +124,26 @@ internal class SettingsRepository(private val application: Application) {
             .toIntOrNull()?.coerceAtLeast(0) ?: 0,
         showSubmissionButton = getBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, false),
         userId = getString(SettingsContract.KEY_USER_ID, "").trim(),
-        enabledCategories = SettingsContract.CATEGORIES.filterTo(linkedSetOf()) {
-            getBoolean(SettingsContract.categoryKey(it), it == "sponsor")
+        categoryModes = SettingsContract.CATEGORIES.associateWith { category ->
+            val default = SettingsContract.defaultCategoryMode(category)
+            when {
+                contains(SettingsContract.categoryModeKey(category)) -> CategoryMode.fromPersisted(
+                    getString(SettingsContract.categoryModeKey(category), default.persistedValue),
+                    default,
+                )
+                contains(SettingsContract.categoryKey(category)) -> if (
+                    getBoolean(SettingsContract.categoryKey(category), category == "sponsor")
+                ) {
+                    if (getBoolean(SettingsContract.KEY_AUTO_SKIP, true)) {
+                        CategoryMode.AUTO_SKIP
+                    } else {
+                        CategoryMode.MANUAL_SKIP
+                    }
+                } else {
+                    CategoryMode.DISABLED
+                }
+                else -> default
+            }
         },
     )
 
@@ -160,7 +200,29 @@ internal object SettingsContract {
         "music_offtopic",
     )
 
+    val DEFAULT_CATEGORY_MODES: Map<String, CategoryMode> = linkedMapOf(
+        "sponsor" to CategoryMode.AUTO_SKIP,
+        "selfpromo" to CategoryMode.MANUAL_SKIP,
+        "interaction" to CategoryMode.MANUAL_SKIP,
+        "intro" to CategoryMode.MANUAL_SKIP,
+        "outro" to CategoryMode.MANUAL_SKIP,
+        "preview" to CategoryMode.SHOW_OVERLAY,
+        "filler" to CategoryMode.DISABLED,
+        "padding" to CategoryMode.AUTO_SKIP,
+        "music_offtopic" to CategoryMode.AUTO_SKIP,
+    )
+
     fun categoryKey(category: String) = "category_$category"
+
+    fun categoryModeKey(category: String) = "category_mode_$category"
+
+    fun defaultCategoryMode(category: String) = DEFAULT_CATEGORY_MODES[category] ?: CategoryMode.DISABLED
+
+    fun legacyCategoryMode(enabled: Boolean, autoSkip: Boolean): CategoryMode = when {
+        !enabled -> CategoryMode.DISABLED
+        autoSkip -> CategoryMode.AUTO_SKIP
+        else -> CategoryMode.MANUAL_SKIP
+    }
 
     fun sourceStatsKey(source: String, value: String) = "$KEY_LOCAL_STATS_SOURCE_PREFIX${source}_$value"
 }

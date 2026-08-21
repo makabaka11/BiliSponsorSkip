@@ -55,6 +55,7 @@ class SettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         DynamicColors.applyToActivityIfAvailable(this)
         super.onCreate(savedInstanceState)
+        migrateCategoryModes()
         ensureUserId()
 
         val containerId = View.generateViewId()
@@ -119,7 +120,6 @@ class SettingsActivity : AppCompatActivity() {
         private fun createScreen(): PreferenceScreen = preferenceManager.createPreferenceScreen(host).apply {
             addPreference(category("基本功能"))
             addPreference(toggle(SettingsContract.KEY_ENABLED, "启用模块功能", "关闭后仅保留 Hook，不请求片段数据", true))
-            addPreference(toggle(SettingsContract.KEY_AUTO_SKIP, "自动跳过片段", "进入已选择的片段时跳转到片段末尾", true))
             addPreference(toggle(SettingsContract.KEY_NOTIFY_FOUND, "发现片段时提示", "打开含特殊片段的视频后显示 Toast", true))
             addPreference(toggle(SettingsContract.KEY_NOTIFY_SKIPPED, "执行跳过后提示", "显示跳过的分类和时长", true))
             addPreference(toggle(SettingsContract.KEY_NOTIFY_FETCH_FAILURE, "请求失败时提示", "片段服务器暂时不可用时显示 Toast", false))
@@ -200,10 +200,19 @@ class SettingsActivity : AppCompatActivity() {
             addPreference(remoteStats)
             addPreference(localStats)
 
-            addPreference(category("自动跳过的片段分类"))
-            addPreference(info("为避免改变观看习惯，默认只启用“赞助/恰饭”；其余分类可按需开启。"))
+            addPreference(category("片段分类行为"))
+            addPreference(info("默认行为与原版浏览器插件一致；“手动跳过”会在进入片段时提供跳过按钮。"))
             SettingsContract.CATEGORIES.forEach { name ->
-                addPreference(toggle(SettingsContract.categoryKey(name), name.categoryLabel(), host.categorySummary(name), name == "sponsor"))
+                addPreference(ListPreference(host).apply {
+                    key = SettingsContract.categoryModeKey(name)
+                    title = name.categoryLabel()
+                    summary = "%s；${host.categorySummary(name)}"
+                    isIconSpaceReserved = false
+                    widgetLayoutResource = R.layout.preference_widget_chevron
+                    entries = CATEGORY_MODE_LABELS
+                    entryValues = CATEGORY_MODE_VALUES
+                    setDefaultValue(SettingsContract.defaultCategoryMode(name).persistedValue)
+                })
             }
 
             addPreference(category("使用说明"))
@@ -211,6 +220,7 @@ class SettingsActivity : AppCompatActivity() {
             addPreference(category("关于"))
             addPreference(info("版本", host.installedVersionName()))
             addPreference(link("作者", "github.com/makabaka11", "https://github.com/makabaka11"))
+            addPreference(link("Telegram 频道", "t.me/bilisponsorskip", "https://t.me/bilisponsorskip"))
             addPreference(link("联系", "ded000@retr0.xyz", "mailto:ded000@retr0.xyz"))
         }
 
@@ -471,7 +481,6 @@ class SettingsActivity : AppCompatActivity() {
         val preferences = modulePreferences()
         return Bundle().apply {
             putBoolean(SettingsContract.KEY_ENABLED, preferences.getBoolean(SettingsContract.KEY_ENABLED, true))
-            putBoolean(SettingsContract.KEY_AUTO_SKIP, preferences.getBoolean(SettingsContract.KEY_AUTO_SKIP, true))
             putBoolean(SettingsContract.KEY_NOTIFY_FOUND, preferences.getBoolean(SettingsContract.KEY_NOTIFY_FOUND, true))
             putBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, preferences.getBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, true))
             putBoolean(SettingsContract.KEY_NOTIFY_FETCH_FAILURE, preferences.getBoolean(SettingsContract.KEY_NOTIFY_FETCH_FAILURE, false))
@@ -483,10 +492,39 @@ class SettingsActivity : AppCompatActivity() {
             putString(SettingsContract.KEY_USER_ID, preferences.getString(SettingsContract.KEY_USER_ID, ""))
             putString(SettingsContract.KEY_USERNAME, preferences.getString(SettingsContract.KEY_USERNAME, ""))
             SettingsContract.CATEGORIES.forEach { category ->
-                putBoolean(SettingsContract.categoryKey(category),
-                    preferences.getBoolean(SettingsContract.categoryKey(category), category == "sponsor"))
+                val default = SettingsContract.defaultCategoryMode(category)
+                putString(
+                    SettingsContract.categoryModeKey(category),
+                    CategoryMode.fromPersisted(
+                        preferences.getString(SettingsContract.categoryModeKey(category), default.persistedValue),
+                        default,
+                    ).persistedValue,
+                )
             }
         }
+    }
+
+    private fun migrateCategoryModes() {
+        val preferences = modulePreferences()
+        val missing = SettingsContract.CATEGORIES.filterNot {
+            preferences.contains(SettingsContract.categoryModeKey(it))
+        }
+        if (missing.isEmpty()) return
+
+        val hasLegacySettings = preferences.contains(SettingsContract.KEY_AUTO_SKIP) ||
+            SettingsContract.CATEGORIES.any { preferences.contains(SettingsContract.categoryKey(it)) }
+        val legacyAutoSkip = preferences.getBoolean(SettingsContract.KEY_AUTO_SKIP, true)
+        val editor = preferences.edit()
+        missing.forEach { category ->
+            val mode = if (hasLegacySettings) {
+                val enabled = preferences.getBoolean(SettingsContract.categoryKey(category), category == "sponsor")
+                SettingsContract.legacyCategoryMode(enabled, legacyAutoSkip)
+            } else {
+                SettingsContract.defaultCategoryMode(category)
+            }
+            editor.putString(SettingsContract.categoryModeKey(category), mode.persistedValue)
+        }
+        editor.apply()
     }
 
     private fun updateUsername(value: String, oldValue: String, preference: EditTextPreference) {
@@ -536,5 +574,12 @@ class SettingsActivity : AppCompatActivity() {
 
     private companion object {
         const val MAX_USER_ID_GENERATION_ATTEMPTS = 5
+        val CATEGORY_MODE_LABELS = arrayOf("禁用", "在进度条中显示", "手动跳过", "自动跳过")
+        val CATEGORY_MODE_VALUES = arrayOf(
+            CategoryMode.DISABLED.persistedValue,
+            CategoryMode.SHOW_OVERLAY.persistedValue,
+            CategoryMode.MANUAL_SKIP.persistedValue,
+            CategoryMode.AUTO_SKIP.persistedValue,
+        )
     }
 }
