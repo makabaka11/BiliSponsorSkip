@@ -38,6 +38,15 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".SettingsSyncReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.retrsoft.bilisponsorskip.UPDATE_MODULE_SETTINGS" />
+                <action android:name="com.retrsoft.bilisponsorskip.REQUEST_MODULE_SETTINGS" />
+            </intent-filter>
+        </receiver>
+
         <meta-data
             android:name="xposedmodule"
             android:value="true" />

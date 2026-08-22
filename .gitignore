@@ -11,3 +11,4 @@ captures/
 *.keystore
 release-secrets.txt
 dist/
+artifacts/

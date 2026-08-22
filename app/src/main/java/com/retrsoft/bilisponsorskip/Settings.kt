@@ -5,6 +5,7 @@ import android.app.Application
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import de.robv.android.xposed.XSharedPreferences
 
 internal data class SettingsSnapshot(
@@ -56,8 +57,54 @@ internal class SettingsRepository(private val application: Application) {
         return current
     }
 
+    fun updateFromEmbeddedSettings(snapshot: SettingsSnapshot) {
+        mirrorPreferences.edit()
+            .clear()
+            .putBoolean(MIRROR_READY, true)
+            .putBoolean(SettingsContract.KEY_ENABLED, snapshot.enabled)
+            .putBoolean(SettingsContract.KEY_NOTIFY_FOUND, snapshot.notifyFound)
+            .putBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, snapshot.notifySkipped)
+            .putBoolean(SettingsContract.KEY_NOTIFY_FETCH_FAILURE, snapshot.notifyFetchFailure)
+            .putBoolean(SettingsContract.KEY_SHOW_TITLE_LABEL, snapshot.showTitleLabel)
+            .putBoolean(SettingsContract.KEY_SHOW_PROGRESS_MARKERS, snapshot.showProgressMarkers)
+            .putBoolean(SettingsContract.KEY_SKIP_ON_SEEK, snapshot.skipOnSeek)
+            .putString(SettingsContract.KEY_MIN_DURATION, snapshot.minDurationSeconds.toString())
+            .putBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, snapshot.showSubmissionButton)
+            .putString(SettingsContract.KEY_USER_ID, snapshot.userId)
+            .apply {
+                SettingsContract.CATEGORIES.forEach { category ->
+                    putString(
+                        SettingsContract.categoryModeKey(category),
+                        snapshot.categoryMode(category).persistedValue,
+                    )
+                }
+            }
+            .apply()
+        current = snapshot
+        Log.d(
+            "embedded settings updated: enabled=${snapshot.enabled}; " +
+                "submission=${snapshot.showSubmissionButton}; " +
+                "userIdConfigured=${Identity.isValid(snapshot.userId)}",
+        )
+        application.sendBroadcast(
+            Intent(SettingsContract.ACTION_UPDATE_MODULE_SETTINGS)
+                .setPackage(SettingsContract.MODULE_PACKAGE)
+                .putExtra(SettingsContract.EXTRA_SETTINGS, SettingsContract.settingsBundle(snapshot)),
+        )
+        onLocalStatsSyncRequested?.invoke()
+    }
+
     init {
         registerMirrorReceiver()
+        requestModuleSettings()
+    }
+
+    private fun requestModuleSettings() {
+        application.sendBroadcast(
+            Intent(SettingsContract.ACTION_REQUEST_MODULE_SETTINGS)
+                .setPackage(SettingsContract.MODULE_PACKAGE)
+                .putExtra(SettingsContract.EXTRA_TARGET_PACKAGE, application.packageName),
+        )
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -169,8 +216,11 @@ internal object SettingsContract {
     const val KEY_USER_ID = "user_id"
     const val KEY_USERNAME = "username"
     const val ACTION_UPDATE_SETTINGS = "com.retrsoft.bilisponsorskip.UPDATE_SETTINGS"
+    const val ACTION_UPDATE_MODULE_SETTINGS = "com.retrsoft.bilisponsorskip.UPDATE_MODULE_SETTINGS"
+    const val ACTION_REQUEST_MODULE_SETTINGS = "com.retrsoft.bilisponsorskip.REQUEST_MODULE_SETTINGS"
     const val ACTION_RECORD_LOCAL_SKIP = "com.retrsoft.bilisponsorskip.RECORD_LOCAL_SKIP"
     const val EXTRA_SETTINGS = "settings"
+    const val EXTRA_TARGET_PACKAGE = "target_package"
     const val EXTRA_SAVED_DURATION_MS = "saved_duration_ms"
     const val EXTRA_STATS_PACKAGE = "stats_package"
     const val EXTRA_STATS_PROCESS = "stats_process"
@@ -223,6 +273,36 @@ internal object SettingsContract {
         autoSkip -> CategoryMode.AUTO_SKIP
         else -> CategoryMode.MANUAL_SKIP
     }
+
+    fun settingsBundle(snapshot: SettingsSnapshot) = Bundle().apply {
+        putBoolean(KEY_ENABLED, snapshot.enabled)
+        putBoolean(KEY_NOTIFY_FOUND, snapshot.notifyFound)
+        putBoolean(KEY_NOTIFY_SKIPPED, snapshot.notifySkipped)
+        putBoolean(KEY_NOTIFY_FETCH_FAILURE, snapshot.notifyFetchFailure)
+        putBoolean(KEY_SHOW_TITLE_LABEL, snapshot.showTitleLabel)
+        putBoolean(KEY_SHOW_PROGRESS_MARKERS, snapshot.showProgressMarkers)
+        putBoolean(KEY_SKIP_ON_SEEK, snapshot.skipOnSeek)
+        putString(KEY_MIN_DURATION, snapshot.minDurationSeconds.toString())
+        putBoolean(KEY_SHOW_SUBMISSION_BUTTON, snapshot.showSubmissionButton)
+        putString(KEY_USER_ID, snapshot.userId)
+        CATEGORIES.forEach { category ->
+            putString(categoryModeKey(category), snapshot.categoryMode(category).persistedValue)
+        }
+    }
+
+    val BOOLEAN_SETTING_KEYS = listOf(
+        KEY_ENABLED,
+        KEY_NOTIFY_FOUND,
+        KEY_NOTIFY_SKIPPED,
+        KEY_NOTIFY_FETCH_FAILURE,
+        KEY_SHOW_TITLE_LABEL,
+        KEY_SHOW_PROGRESS_MARKERS,
+        KEY_SKIP_ON_SEEK,
+        KEY_SHOW_SUBMISSION_BUTTON,
+    )
+
+    val STRING_SETTING_KEYS: List<String>
+        get() = listOf(KEY_MIN_DURATION, KEY_USER_ID, KEY_USERNAME) + CATEGORIES.map(::categoryModeKey)
 
     fun sourceStatsKey(source: String, value: String) = "$KEY_LOCAL_STATS_SOURCE_PREFIX${source}_$value"
 }

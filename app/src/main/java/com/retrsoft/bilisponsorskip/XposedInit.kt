@@ -84,6 +84,10 @@ class XposedInit : IXposedHookLoadPackage {
         uiLifecycle.attach(playerUi, submissionUi)
 
         runCatching {
+            BiliSettingsEntryInjector(settings, lpparam.classLoader).install()
+        }.onFailure { Log.e("failed to install Bili settings entry hook", it) }
+
+        runCatching {
             VideoIdentityHook(lpparam.classLoader, controller).install()
         }.onFailure { Log.e("failed to install video identity hooks", it) }
 
