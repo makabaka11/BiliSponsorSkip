@@ -17,6 +17,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -37,6 +38,7 @@ import java.lang.ref.WeakReference
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 internal class SubmissionUiInjector(
     private val application: Application,
@@ -55,6 +57,7 @@ internal class SubmissionUiInjector(
         val regularPlayer: Boolean,
         val anchor: View? = null,
         val positionBeforeAnchor: Boolean = false,
+        val spacingBeforeAnchor: Int = 0,
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -71,17 +74,12 @@ internal class SubmissionUiInjector(
     private var observedDecor: WeakReference<View>? = null
     private var globalLayoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null
     private var immediateRenderScheduled = false
+    private var placementDiagnosticSamples = 0
+    private var lastPlacementDiagnosticAt = 0L
 
     fun start() {
-        mainHandler.post(renderRunnable)
+        controller.addUiStateListener(::requestImmediateRender)
         Log.d("submission UI injector started")
-    }
-
-    private val renderRunnable = object : Runnable {
-        override fun run() {
-            renderSafely()
-            mainHandler.postDelayed(this, RENDER_INTERVAL_MS)
-        }
     }
 
     private val immediateRenderRunnable = Runnable {
@@ -104,6 +102,14 @@ internal class SubmissionUiInjector(
         val snapshot = controller.uiSnapshot()
         val playerPage = activity?.let(::isVideoPlayerPage) ?: false
         val placement = activity?.let(::findButtonPlacement)
+        if (activity != null && playerPage && placement == null &&
+            activity.javaClass.name != LEGACY_VIDEO_DETAILS_ACTIVITY
+        ) {
+            logPlacementDiagnostics(activity)
+        } else if (placement != null) {
+            placementDiagnosticSamples = 0
+            lastPlacementDiagnosticAt = 0L
+        }
         if (draft.video != snapshot.video) {
             draft.video = snapshot.video
             draft.startMs = null
@@ -122,7 +128,9 @@ internal class SubmissionUiInjector(
         if (snapshot.video != null && snapshot.showSubmissionButton) {
             val target = when {
                 placement?.regularPlayer == true -> "regular"
+                placement?.parent?.let(::resourceName) == LEGACY_FULLSCREEN_TOP_ID -> "legacy-fullscreen"
                 placement?.parent?.let(::resourceName) == PORTRAIT_ACTIONS_RIGHT_ID -> "portrait-detail"
+                placement?.anchor?.let(::resourceName) == LEGACY_PROJECTION_LAYOUT_ID -> "legacy-top-controls"
                 placement != null -> "story"
                 else -> "none"
             }
@@ -148,11 +156,18 @@ internal class SubmissionUiInjector(
             removeButton(dismissMenu = false)
             attachButton(activity, target)
         }
-        if (target.positionBeforeAnchor) positionBeforeAnchor(requireNotNull(button), requireNotNull(target.anchor))
+        if (target.positionBeforeAnchor) {
+            positionBeforeAnchor(
+                requireNotNull(button),
+                requireNotNull(target.anchor),
+                target.spacingBeforeAnchor,
+            )
+        }
     }
 
     private fun attachButton(activity: Activity, placement: ButtonPlacement) {
         val parent = placement.parent
+        val legacyTopAnchor = placement.anchor?.let(::resourceName) == LEGACY_PROJECTION_LAYOUT_ID
         val size = placement.anchor?.let { min(it.width, it.height) }?.takeIf { it > 0 }
             ?: parent.height.takeIf { it in activity.dp(32)..activity.dp(64) }
             ?: activity.dp(44)
@@ -161,23 +176,47 @@ internal class SubmissionUiInjector(
             expandedRegularGroup = parent
             parent.layoutParams = parent.layoutParams.apply { width = parent.width.coerceAtLeast(size) + size }
         }
-        val iconPadding = ((size - activity.dp(SUBMISSION_ICON_SIZE_DP)) / 2)
-            .coerceAtLeast(activity.dp(MIN_SUBMISSION_ICON_PADDING_DP))
+        val centeredIconPadding = ((size - activity.dp(SUBMISSION_ICON_SIZE_DP)) / 2).coerceAtLeast(0)
+        val iconPadding = if (placement.positionBeforeAnchor) {
+            centeredIconPadding
+        } else {
+            centeredIconPadding.coerceAtLeast(activity.dp(MIN_SUBMISSION_ICON_PADDING_DP))
+        }
+        val legacyHorizontalPadding = if (legacyTopAnchor) {
+            ((requireNotNull(placement.anchor).width - activity.dp(SUBMISSION_ICON_SIZE_DP)) / 2).coerceAtLeast(0)
+        } else {
+            iconPadding
+        }
+        val legacyVerticalPadding = if (legacyTopAnchor) {
+            ((requireNotNull(placement.anchor).height - activity.dp(SUBMISSION_ICON_SIZE_DP)) / 2).coerceAtLeast(0)
+        } else {
+            iconPadding
+        }
         val injectedButton = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             contentDescription = "片段提交与投票"
             isClickable = true
             isFocusable = true
-            setPadding(iconPadding, iconPadding, iconPadding, iconPadding)
+            setPadding(
+                legacyHorizontalPadding,
+                legacyVerticalPadding,
+                legacyHorizontalPadding,
+                legacyVerticalPadding,
+            )
             setImageDrawable(loadUploadIcon())
             setOnClickListener { openMenu(activity) }
         }
         val params = when {
             placement.positionBeforeAnchor -> ViewGroup.LayoutParams(size, size)
+            legacyTopAnchor -> legacyTopLayoutParams(requireNotNull(placement.anchor))
             parent is LinearLayout && placement.anchor != null ->
                 LinearLayout.LayoutParams(placement.anchor.layoutParams).apply {
-                    width = size
-                    height = size
+                    if (weight > 0f) {
+                        width = 0
+                    } else {
+                        width = size
+                    }
+                    height = placement.anchor.layoutParams.height.takeIf { it > 0 } ?: size
                 }
             placement.anchor != null -> anchoredBeforeLayoutParams(placement.anchor, size)
             parent is LinearLayout -> LinearLayout.LayoutParams(size, size)
@@ -185,15 +224,34 @@ internal class SubmissionUiInjector(
         }
         parent.addView(injectedButton, placement.index.coerceIn(0, parent.childCount), params)
         if (placement.positionBeforeAnchor) {
-            parent.post { positionBeforeAnchor(injectedButton, requireNotNull(placement.anchor)) }
+            parent.post {
+                positionBeforeAnchor(
+                    injectedButton,
+                    requireNotNull(placement.anchor),
+                    placement.spacingBeforeAnchor,
+                )
+            }
         }
         button = injectedButton
         buttonParent = parent
         Log.d("submission button injected into ${resourceName(parent)} at ${placement.index}")
     }
 
-    private fun positionBeforeAnchor(view: View, anchor: View) {
-        view.x = anchor.x - view.layoutParams.width
+    private fun legacyTopLayoutParams(anchor: View): LinearLayout.LayoutParams {
+        val source = anchor.layoutParams
+        val copy = if (source is LinearLayout.LayoutParams) {
+            LinearLayout.LayoutParams(source)
+        } else {
+            LinearLayout.LayoutParams(source)
+        }
+        copy.width = anchor.width
+        copy.height = anchor.height
+        copy.weight = 0f
+        return copy
+    }
+
+    private fun positionBeforeAnchor(view: View, anchor: View, spacing: Int) {
+        view.x = anchor.x - view.layoutParams.width - spacing
         view.y = anchor.y + (anchor.height - view.layoutParams.height) / 2f
     }
 
@@ -227,6 +285,9 @@ internal class SubmissionUiInjector(
         val views = findAllViews(decor)
         val storyMode = views.any { resourceName(it) in STORY_SEEKBAR_IDS && it.isShown }
         if (storyMode) findStoryPlacement(activity, views)?.let { return it }
+        if (activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            findLegacyFullscreenPlacement(views)?.let { return it }
+        }
         val regularGroup = views.firstOrNull {
             it is ViewGroup && resourceName(it) == REGULAR_TOP_GROUP_ID && it.isShown
         } as? ViewGroup
@@ -240,13 +301,63 @@ internal class SubmissionUiInjector(
         }
         findPortraitDetailPlacement(views)?.let { return it }
         if (regularGroup != null) return ButtonPlacement(regularGroup, 0, true)
+        findLegacyTopControlPlacement(views)?.let { return it }
         return findStoryPlacement(activity, views)
+    }
+
+    private fun findLegacyFullscreenPlacement(views: List<View>): ButtonPlacement? {
+        val controls = views.firstOrNull {
+            it is LinearLayout && resourceName(it) == LEGACY_FULLSCREEN_TOP_ID && it.isAttachedToWindow
+        } as? LinearLayout ?: return null
+        val like = views.firstOrNull {
+            resourceName(it) == LEGACY_FULLSCREEN_LIKE_ID && it.isAttachedToWindow &&
+                isDescendant(it, controls)
+        } ?: return null
+        val likeContainer = directChildUnder(like, controls) ?: return null
+        val likeIndex = controls.indexOfChild(likeContainer)
+        if (likeIndex < 0) return null
+        return ButtonPlacement(controls, likeIndex, false, likeContainer)
+    }
+
+    private fun logPlacementDiagnostics(activity: Activity) {
+        val now = SystemClock.uptimeMillis()
+        if (placementDiagnosticSamples >= MAX_PLACEMENT_DIAGNOSTIC_SAMPLES ||
+            now - lastPlacementDiagnosticAt < PLACEMENT_DIAGNOSTIC_INTERVAL_MS
+        ) return
+        lastPlacementDiagnosticAt = now
+        placementDiagnosticSamples++
+        val decor = activity.window?.decorView ?: return
+        val candidates = findAllViews(decor).asSequence()
+            .filter { it.isShown && it.width > 0 && it.height > 0 }
+            .mapNotNull { view ->
+                val name = resourceName(view)
+                val description = view.contentDescription?.toString()?.trim().orEmpty()
+                val text = (view as? TextView)?.text?.toString()?.trim().orEmpty()
+                if (name.isBlank() && description.isBlank() && text.isBlank()) return@mapNotNull null
+                val parent = (view.parent as? View)?.let(::resourceName).orEmpty()
+                buildString {
+                    append(name.ifBlank { "-" })
+                    append('|').append(view.javaClass.name)
+                    append('|').append(view.width).append('x').append(view.height)
+                    if (parent.isNotBlank()) append("|parent=").append(parent)
+                    if (description.isNotBlank()) append("|desc=").append(description.take(DIAGNOSTIC_TEXT_LIMIT))
+                    if (text.isNotBlank()) append("|text=").append(text.take(DIAGNOSTIC_TEXT_LIMIT))
+                }
+            }
+            .take(MAX_PLACEMENT_DIAGNOSTIC_VIEWS)
+            .joinToString("\n")
+        Log.d(
+            "submission placement diagnostics ${placementDiagnosticSamples}/$MAX_PLACEMENT_DIAGNOSTIC_SAMPLES: " +
+                "activity=${activity.javaClass.name}; orientation=${activity.resources.configuration.orientation}\n" +
+                candidates,
+        )
     }
 
     private fun findPortraitDetailPlacement(views: List<View>): ButtonPlacement? {
         val actions = views.firstOrNull {
             it is LinearLayout && resourceName(it) == PORTRAIT_ACTIONS_RIGHT_ID && it.isShown
-        } as? LinearLayout ?: return null
+        } as? LinearLayout
+        if (actions == null) return null
         val listenIcon = views.firstOrNull {
             it.isShown && it.contentDescription?.toString() == PORTRAIT_LISTEN_DESCRIPTION &&
                 isDescendant(it, actions)
@@ -254,6 +365,18 @@ internal class SubmissionUiInjector(
         val listenContainer = directChildUnder(listenIcon, actions)
             ?: return ButtonPlacement(actions, actions.childCount, false)
         return ButtonPlacement(actions, actions.indexOfChild(listenContainer), false, listenContainer)
+    }
+
+    private fun findLegacyTopControlPlacement(views: List<View>): ButtonPlacement? {
+        val projection = views.firstOrNull {
+            resourceName(it) == LEGACY_PROJECTION_LAYOUT_ID &&
+                it.isShown && it.width > 0 && it.height > 0
+        } ?: return null
+        val controls = projection.parent as? LinearLayout ?: return null
+        if (!controls.isShown || controls.width <= 0 || controls.height <= 0) return null
+        val projectionIndex = controls.indexOfChild(projection)
+        if (projectionIndex < 0) return null
+        return ButtonPlacement(controls, projectionIndex, false, projection)
     }
 
     private fun findStoryPlacement(activity: Activity, views: List<View>): ButtonPlacement? {
@@ -265,13 +388,28 @@ internal class SubmissionUiInjector(
                 resourceName(it) == STORY_MORE_ID
             }
         }
-        if (whiteTop != null && whiteMore != null) {
+        val whiteSearch = whiteTop?.let { group ->
+            views.firstOrNull {
+                resourceName(it) == STORY_SEARCH_ID && it.isShown && isDescendant(it, group)
+            }?.let { directChildUnder(it, group) }
+        }
+        val whiteAnchor = whiteSearch ?: whiteMore
+        if (whiteTop != null && whiteAnchor != null) {
+            val spacingBeforeSearch = if (whiteSearch != null && whiteMore != null) {
+                val searchCenter = whiteSearch.x + whiteSearch.width / 2f
+                val moreCenter = whiteMore.x + whiteMore.width / 2f
+                val buttonSize = min(whiteSearch.width, whiteSearch.height)
+                (moreCenter - searchCenter - buttonSize).roundToInt().coerceAtLeast(0)
+            } else {
+                0
+            }
             return ButtonPlacement(
                 whiteTop,
-                whiteTop.indexOfChild(whiteMore),
+                whiteTop.indexOfChild(whiteAnchor),
                 regularPlayer = false,
-                anchor = whiteMore,
+                anchor = whiteAnchor,
                 positionBeforeAnchor = true,
+                spacingBeforeAnchor = spacingBeforeSearch,
             )
         }
         val exactGroup = views.firstOrNull {
@@ -1061,7 +1199,10 @@ internal class SubmissionUiInjector(
     }
 
     private companion object {
-        const val RENDER_INTERVAL_MS = 750L
+        const val MAX_PLACEMENT_DIAGNOSTIC_SAMPLES = 3
+        const val PLACEMENT_DIAGNOSTIC_INTERVAL_MS = 2_000L
+        const val MAX_PLACEMENT_DIAGNOSTIC_VIEWS = 180
+        const val DIAGNOSTIC_TEXT_LIMIT = 40
         const val SUBMISSION_ICON_SIZE_DP = 24
         const val MIN_SUBMISSION_ICON_PADDING_DP = 8
         const val HALF_SCREEN_SEEKBAR_ID = "bbplayer_halfscreen_seekbar"
@@ -1072,10 +1213,15 @@ internal class SubmissionUiInjector(
         const val STORY_MORE_ID = "container_top_more"
         const val PORTRAIT_ACTIONS_RIGHT_ID = "actions_container_right"
         const val PORTRAIT_LISTEN_DESCRIPTION = "听视频按钮"
+        const val LEGACY_PROJECTION_LAYOUT_ID = "projection_screen_layout"
+        const val LEGACY_FULLSCREEN_TOP_ID = "top_view"
+        const val LEGACY_FULLSCREEN_LIKE_ID = "bbplayer_fullscreen_like"
+        const val LEGACY_VIDEO_DETAILS_ACTIVITY = "com.bilibili.video.videodetail.VideoDetailsActivity"
         val STORY_SEEKBAR_IDS = setOf("story_ctrl_seekbar", "story_landscape_ctrl_seekbar")
         val STORY_VIEWERS_REGEX = Regex(".*\\d+\\s*人正在看.*")
         val PLAYER_PAGE_SEEKBAR_IDS = setOf(
             HALF_SCREEN_SEEKBAR_ID,
+            "bbplayer_fullscreen_seekbar",
             "gemini_halfscreen_seekbar",
             *STORY_SEEKBAR_IDS.toTypedArray(),
         )

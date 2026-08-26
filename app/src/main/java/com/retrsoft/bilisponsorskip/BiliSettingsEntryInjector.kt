@@ -94,20 +94,31 @@ internal class BiliSettingsEntryInjector(
     }
 
     private fun openSettings(activity: Activity) {
-        val standalone = Intent().setClassName(
+        val explicit = Intent().setClassName(
             SettingsContract.MODULE_PACKAGE,
             "${SettingsContract.MODULE_PACKAGE}.SettingsActivity",
-        ).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        try {
-            activity.startActivity(standalone)
-            Log.d("opened standalone module settings from Bili settings")
-        } catch (_: ActivityNotFoundException) {
-            EmbeddedSettingsDialog(activity, settings).show()
-            Log.d("opened embedded module settings from Bili settings")
-        } catch (_: SecurityException) {
-            EmbeddedSettingsDialog(activity, settings).show()
-            Log.d("standalone module settings unavailable; opened embedded settings")
+        )
+        val candidates = listOf(
+            explicit,
+            Intent(SettingsContract.ACTION_OPEN_SETTINGS)
+                .addCategory(Intent.CATEGORY_DEFAULT),
+            Intent.createChooser(Intent(explicit), "打开哔哩空降助手设置"),
+        ).map { intent ->
+            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
         }
+        candidates.forEachIndexed { index, standalone ->
+            try {
+                activity.startActivity(standalone)
+                Log.d("opened standalone module settings from Bili settings: strategy=$index")
+                return
+            } catch (error: ActivityNotFoundException) {
+                Log.e("standalone module settings activity not found: strategy=$index", error)
+            } catch (error: SecurityException) {
+                Log.e("standalone module settings activity denied: strategy=$index", error)
+            }
+        }
+        EmbeddedSettingsDialog(activity, settings).show()
+        Log.d("opened embedded module settings after standalone strategies failed")
     }
 
     private companion object {
@@ -124,7 +135,7 @@ private class EmbeddedSettingsDialog(
     private val activity: Activity,
     private val settings: SettingsRepository,
 ) {
-    private val initial = settings.current
+    private val initial = settings.refresh()
     private val switches = linkedMapOf<String, Switch>()
     private val categorySpinners = linkedMapOf<String, Spinner>()
     private lateinit var minimumDurationSpinner: Spinner
@@ -135,7 +146,7 @@ private class EmbeddedSettingsDialog(
             orientation = LinearLayout.VERTICAL
             setPadding(activity.dp(20), activity.dp(8), activity.dp(20), activity.dp(12))
         }
-        body.addView(info("LSPatch 内嵌设置会保存在当前 B 站客户端中。若已独立安装模块，将优先打开完整设置页。"))
+        body.addView(info("内嵌设置会保存在当前 B 站客户端中。若系统允许当前客户端发现模块应用，将优先打开完整设置页。"))
         body.addView(section("基本功能"))
         addSwitch(body, SettingsContract.KEY_ENABLED, "启用模块功能", initial.enabled)
         addSwitch(body, SettingsContract.KEY_NOTIFY_FOUND, "发现片段时提示", initial.notifyFound)

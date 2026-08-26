@@ -48,17 +48,19 @@ internal class SettingsRepository(private val application: Application) {
     @Volatile
     var onLocalStatsSyncRequested: (() -> Unit)? = null
 
+    @Volatile
+    var onSettingsChanged: (() -> Unit)? = null
+
     fun refresh(): SettingsSnapshot {
-        current = runCatching {
-            readFromMirror() ?:
-                readFromLegacyPreferences()
-        }.onFailure { Log.e("failed to read module settings; using defaults", it) }
-            .getOrDefault(SettingsSnapshot())
+        val updated = loadCurrentSettings()
+        val changed = updated != current
+        current = updated
+        if (changed) onSettingsChanged?.invoke()
         return current
     }
 
     fun updateFromEmbeddedSettings(snapshot: SettingsSnapshot) {
-        mirrorPreferences.edit()
+        val persisted = mirrorPreferences.edit()
             .clear()
             .putBoolean(MIRROR_READY, true)
             .putBoolean(SettingsContract.KEY_ENABLED, snapshot.enabled)
@@ -79,8 +81,13 @@ internal class SettingsRepository(private val application: Application) {
                     )
                 }
             }
-            .apply()
+            .commit()
+        if (!persisted) {
+            Log.e("failed to persist embedded settings mirror")
+        }
+        val changed = current != snapshot
         current = snapshot
+        if (changed) onSettingsChanged?.invoke()
         Log.d(
             "embedded settings updated: enabled=${snapshot.enabled}; " +
                 "submission=${snapshot.showSubmissionButton}; " +
@@ -88,7 +95,11 @@ internal class SettingsRepository(private val application: Application) {
         )
         application.sendBroadcast(
             Intent(SettingsContract.ACTION_UPDATE_MODULE_SETTINGS)
-                .setPackage(SettingsContract.MODULE_PACKAGE)
+                .setClassName(
+                    SettingsContract.MODULE_PACKAGE,
+                    "${SettingsContract.MODULE_PACKAGE}.SettingsSyncReceiver",
+                )
+                .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                 .putExtra(SettingsContract.EXTRA_SETTINGS, SettingsContract.settingsBundle(snapshot)),
         )
         onLocalStatsSyncRequested?.invoke()
@@ -96,13 +107,28 @@ internal class SettingsRepository(private val application: Application) {
 
     init {
         registerMirrorReceiver()
+        current = loadCurrentSettings()
+        Log.d(
+            "settings initialized: mirror=${mirrorPreferences.getBoolean(MIRROR_READY, false)}; " +
+                "submission=${current.showSubmissionButton}; " +
+                "userIdConfigured=${Identity.isValid(current.userId)}",
+        )
         requestModuleSettings()
     }
+
+    private fun loadCurrentSettings(): SettingsSnapshot = runCatching {
+        readFromMirror() ?: readFromLegacyPreferences()
+    }.onFailure { Log.e("failed to read module settings; using defaults", it) }
+        .getOrDefault(SettingsSnapshot())
 
     private fun requestModuleSettings() {
         application.sendBroadcast(
             Intent(SettingsContract.ACTION_REQUEST_MODULE_SETTINGS)
-                .setPackage(SettingsContract.MODULE_PACKAGE)
+                .setClassName(
+                    SettingsContract.MODULE_PACKAGE,
+                    "${SettingsContract.MODULE_PACKAGE}.SettingsSyncReceiver",
+                )
+                .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                 .putExtra(SettingsContract.EXTRA_TARGET_PACKAGE, application.packageName),
         )
     }
@@ -121,7 +147,10 @@ internal class SettingsRepository(private val application: Application) {
                     }
                 }
                 editor.apply()
-                current = readFromMirror() ?: SettingsSnapshot()
+                val updated = readFromMirror() ?: SettingsSnapshot()
+                val changed = updated != current
+                current = updated
+                if (changed) onSettingsChanged?.invoke()
                 Log.d(
                     "settings mirror updated: submission=${current.showSubmissionButton}; " +
                         "userIdConfigured=${Identity.isValid(current.userId)}",
@@ -216,6 +245,7 @@ internal object SettingsContract {
     const val KEY_USER_ID = "user_id"
     const val KEY_USERNAME = "username"
     const val ACTION_UPDATE_SETTINGS = "com.retrsoft.bilisponsorskip.UPDATE_SETTINGS"
+    const val ACTION_OPEN_SETTINGS = "com.retrsoft.bilisponsorskip.OPEN_SETTINGS"
     const val ACTION_UPDATE_MODULE_SETTINGS = "com.retrsoft.bilisponsorskip.UPDATE_MODULE_SETTINGS"
     const val ACTION_REQUEST_MODULE_SETTINGS = "com.retrsoft.bilisponsorskip.REQUEST_MODULE_SETTINGS"
     const val ACTION_RECORD_LOCAL_SKIP = "com.retrsoft.bilisponsorskip.RECORD_LOCAL_SKIP"

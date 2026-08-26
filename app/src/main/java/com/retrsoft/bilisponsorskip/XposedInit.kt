@@ -3,10 +3,13 @@ package com.retrsoft.bilisponsorskip
 import android.app.Activity
 import android.app.Application
 import android.app.Instrumentation
+import android.os.Bundle
 import de.robv.android.xposed.IXposedHookLoadPackage
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
+import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicBoolean
 
 class XposedInit : IXposedHookLoadPackage {
@@ -14,8 +17,9 @@ class XposedInit : IXposedHookLoadPackage {
         if (lpparam.packageName !in TARGET_PACKAGES || lpparam.processName != lpparam.packageName) return
 
         val uiLifecycle = UiLifecycleRelay()
-        installActivityLifecycleHooks(uiLifecycle)
+        installInstrumentationActivityHooks(uiLifecycle)
         val initialized = AtomicBoolean(false)
+        val lifecycleCallbacksRegistered = AtomicBoolean(false)
         XposedHelpers.findAndHookMethod(
             Instrumentation::class.java,
             "callApplicationOnCreate",
@@ -25,35 +29,43 @@ class XposedInit : IXposedHookLoadPackage {
                     if (!initialized.compareAndSet(false, true)) return
                     initialize(lpparam, param.args[0] as Application, uiLifecycle)
                 }
+
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    if (!lifecycleCallbacksRegistered.compareAndSet(false, true)) return
+                    registerActivityLifecycleCallbacks(param.args[0] as Application, uiLifecycle)
+                }
             },
         )
     }
 
-    private fun installActivityLifecycleHooks(uiLifecycle: UiLifecycleRelay) {
+    private fun installInstrumentationActivityHooks(uiLifecycle: UiLifecycleRelay) {
         XposedHelpers.findAndHookMethod(
+            Instrumentation::class.java,
+            "callActivityOnResume",
             Activity::class.java,
-            "onResume",
             object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    uiLifecycle.onActivityResumed(param.thisObject as Activity)
+                    uiLifecycle.onActivityResumed(param.args[0] as Activity)
                 }
             },
         )
         XposedHelpers.findAndHookMethod(
+            Instrumentation::class.java,
+            "callActivityOnPause",
             Activity::class.java,
-            "onPause",
             object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    uiLifecycle.onActivityPaused(param.thisObject as Activity)
+                    uiLifecycle.onActivityPaused(param.args[0] as Activity)
                 }
             },
         )
         XposedHelpers.findAndHookMethod(
+            Instrumentation::class.java,
+            "callActivityOnDestroy",
             Activity::class.java,
-            "onDestroy",
             object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
-                    uiLifecycle.onActivityDestroyed(param.thisObject as Activity)
+                    uiLifecycle.onActivityDestroyed(param.args[0] as Activity)
                 }
             },
         )
@@ -82,6 +94,7 @@ class XposedInit : IXposedHookLoadPackage {
         val playerUi = PlayerUiInjector(application, controller).also(PlayerUiInjector::start)
         val submissionUi = SubmissionUiInjector(application, controller).also(SubmissionUiInjector::start)
         uiLifecycle.attach(playerUi, submissionUi)
+        installTargetActivityHooks(lpparam.classLoader, uiLifecycle)
 
         runCatching {
             BiliSettingsEntryInjector(settings, lpparam.classLoader).install()
@@ -105,6 +118,64 @@ class XposedInit : IXposedHookLoadPackage {
             runCatching { playerNotice.install() }
                 .onFailure { Log.e("failed to install interactive player notice bridge", it) }
         }, "BiliSponsorSkip-dex").apply { isDaemon = true }.start()
+    }
+
+    private fun installTargetActivityHooks(
+        classLoader: ClassLoader,
+        uiLifecycle: UiLifecycleRelay,
+    ) {
+        TARGET_ACTIVITY_CLASSES.forEach { className ->
+            val activityClass = XposedHelpers.findClassIfExists(className, classLoader) ?: return@forEach
+            if (!Activity::class.java.isAssignableFrom(activityClass)) return@forEach
+
+            val installed = mutableListOf<String>()
+            listOf("onResume", "onPause", "onDestroy").forEach { methodName ->
+                val method = findLifecycleMethod(activityClass, methodName) ?: return@forEach
+                XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val activity = param.thisObject as? Activity ?: return
+                        when (methodName) {
+                            "onResume" -> uiLifecycle.onActivityResumed(activity)
+                            "onPause" -> uiLifecycle.onActivityPaused(activity)
+                            "onDestroy" -> uiLifecycle.onActivityDestroyed(activity)
+                        }
+                    }
+                })
+                installed += "$methodName@${method.declaringClass.name}"
+            }
+            Log.d("target activity lifecycle hooks installed: $className (${installed.joinToString()})")
+        }
+    }
+
+    private fun findLifecycleMethod(activityClass: Class<*>, name: String): Method? {
+        var current: Class<*>? = activityClass
+        while (current != null && Activity::class.java.isAssignableFrom(current)) {
+            current.declaredMethods.firstOrNull { it.name == name && it.parameterCount == 0 }?.let { return it }
+            current = current.superclass
+        }
+        return null
+    }
+
+    private fun registerActivityLifecycleCallbacks(
+        application: Application,
+        uiLifecycle: UiLifecycleRelay,
+    ) {
+        application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityResumed(activity: Activity) = uiLifecycle.onActivityResumed(activity)
+
+            override fun onActivityPaused(activity: Activity) = uiLifecycle.onActivityPaused(activity)
+
+            override fun onActivityDestroyed(activity: Activity) = uiLifecycle.onActivityDestroyed(activity)
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+
+            override fun onActivityStarted(activity: Activity) = Unit
+
+            override fun onActivityStopped(activity: Activity) = Unit
+
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+        })
+        Log.d("activity lifecycle callbacks registered")
     }
 
     private class UiLifecycleRelay {
@@ -136,6 +207,10 @@ class XposedInit : IXposedHookLoadPackage {
     }
 
     private companion object {
+        val TARGET_ACTIVITY_CLASSES = listOf(
+            "com.bilibili.video.videodetail.VideoDetailsActivity",
+        )
+
         val TARGET_PACKAGES = setOf(
             "tv.danmaku.bili",
             "com.bilibili.app.blue",

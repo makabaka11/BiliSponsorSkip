@@ -43,6 +43,7 @@ internal class PlayerUiInjector(
     private data class MarkerState(
         val drawable: SegmentMarkerDrawable,
         val layoutListener: View.OnLayoutChangeListener,
+        val attachListener: View.OnAttachStateChangeListener,
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -62,15 +63,8 @@ internal class PlayerUiInjector(
 
     fun start() {
         installExpandableTitleHook()
-        mainHandler.post(renderRunnable)
+        controller.addUiStateListener(::requestImmediateRender)
         Log.d("player UI injector started")
-    }
-
-    private val renderRunnable = object : Runnable {
-        override fun run() {
-            renderSafely()
-            mainHandler.postDelayed(this, RENDER_INTERVAL_MS)
-        }
     }
 
     private val immediateRenderRunnable = Runnable {
@@ -166,7 +160,10 @@ internal class PlayerUiInjector(
         }
 
         val titleTargets = allTextViews
-            .filter { it.isShown && it.text.isNotBlank() }
+            .filter {
+                it.isAttachedToWindow && it.text.isNotBlank() &&
+                    (it.isShown || it in playerTitles)
+            }
             .filter { view ->
                 view in detailTitles ||
                     view in playerTitles ||
@@ -317,7 +314,8 @@ internal class PlayerUiInjector(
         if (!view.isShown || view.text.isBlank()) return false
         if (!isDetailTitleStructure(view)) return false
         return view.hasAncestorWithIdName(VIDEO_INTRO_CONTAINER_ID_NAME) ||
-            view.hasAncestorWithIdName(VIDEO_RECYCLER_ID_NAME)
+            view.hasAncestorWithIdName(VIDEO_RECYCLER_ID_NAME) ||
+            view.hasAncestorWithIdName(LEGACY_VIDEO_RECYCLER_ID_NAME)
     }
 
     private fun isDetailTitleStructure(view: TextView): Boolean =
@@ -396,6 +394,7 @@ internal class PlayerUiInjector(
         if (!view.isAttachedToWindow) return false
         val className = view.javaClass.name
         return className == PLAYER_SEEK_WIDGET_V3_CLASS ||
+            className == LEGACY_PLAYER_SEEK_CLASS ||
             className == STORY_SEEK_BAR_CLASS ||
             (view is SeekBar && className.startsWith(PLAYER_SEEK_PACKAGE_PREFIX))
     }
@@ -420,13 +419,31 @@ internal class PlayerUiInjector(
 
     private fun attachMarkerDrawable(view: View): MarkerState {
         val drawable = SegmentMarkerDrawable(view)
-        val listener = View.OnLayoutChangeListener { changed, _, _, _, _, _, _, _, _ ->
+        val layoutListener = View.OnLayoutChangeListener { changed, _, _, _, _, _, _, _, _ ->
             drawable.bounds = android.graphics.Rect(0, 0, changed.width, changed.height)
             drawable.invalidateSelf()
         }
-        view.addOnLayoutChangeListener(listener)
-        view.overlay.add(drawable)
-        return MarkerState(drawable, listener).also { markerStates[view] = it }
+        var overlayAttached = false
+        fun attachOverlay() {
+            if (overlayAttached) return
+            drawable.bounds = android.graphics.Rect(0, 0, view.width, view.height)
+            view.overlay.add(drawable)
+            overlayAttached = true
+            view.invalidate()
+        }
+        fun detachOverlay() {
+            if (!overlayAttached) return
+            view.overlay.remove(drawable)
+            overlayAttached = false
+        }
+        val attachListener = object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(attached: View) = attachOverlay()
+            override fun onViewDetachedFromWindow(detached: View) = detachOverlay()
+        }
+        view.addOnLayoutChangeListener(layoutListener)
+        view.addOnAttachStateChangeListener(attachListener)
+        if (view.isAttachedToWindow) attachOverlay()
+        return MarkerState(drawable, layoutListener, attachListener).also { markerStates[view] = it }
     }
 
     private fun restoreTitleLabelsExcept(keep: Set<TextView>) {
@@ -472,6 +489,7 @@ internal class PlayerUiInjector(
     private fun removeProgressMarker(view: View) {
         val state = markerStates.remove(view) ?: return
         view.removeOnLayoutChangeListener(state.layoutListener)
+        view.removeOnAttachStateChangeListener(state.attachListener)
         view.overlay.remove(state.drawable)
     }
 
@@ -758,13 +776,13 @@ internal class PlayerUiInjector(
     }
 
     private companion object {
-        const val RENDER_INTERVAL_MS = 750L
         const val INLINE_LABEL_PLACEHOLDER = "\uFFFC"
         const val EXPANDABLE_TITLE_CLASS =
             "tv.danmaku.bili.videopage.common.widget.view.ExpandableTextView"
         const val TITLE_ID_NAME = "title"
         const val VIDEO_INTRO_CONTAINER_ID_NAME = "fl_intro_container"
         const val VIDEO_RECYCLER_ID_NAME = "recycler"
+        const val LEGACY_VIDEO_RECYCLER_ID_NAME = "recycler_view"
         const val TITLE_ARROW_ID_NAME = "arrow"
         val PROGRESS_ID_NAMES = listOf(
             "bbplayer_halfscreen_seekbar",
@@ -773,10 +791,13 @@ internal class PlayerUiInjector(
         )
         const val PLAYER_SEEK_WIDGET_V3_CLASS =
             "com.bilibili.playerbizcommonv2.widget.seek.v3.PlayerSeekWidget3"
+        const val LEGACY_PLAYER_SEEK_CLASS =
+            "com.bilibili.playerbizcommon.widget.control.HighEnergySeekWidget"
         const val PLAYER_SEEK_PACKAGE_PREFIX = "com.bilibili.playerbizcommonv2.widget.seek."
         const val STORY_SEEK_BAR_CLASS = "com.bilibili.video.story.view.StorySeekBar"
         val PLAYER_TITLE_CLASSES = setOf(
             "com.bilibili.app.gemini.player.widget.base.GeminiPlayerTitleWidget",
+            "com.bilibili.playerbizcommon.widget.control.PlayerTitleWidget",
             "com.bilibili.video.story.action.widget.StoryTitleWidget",
             "com.bilibili.video.story.action.widget.StoryLandscapeTitleWidget",
         )

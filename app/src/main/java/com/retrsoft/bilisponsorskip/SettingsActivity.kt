@@ -466,8 +466,12 @@ class SettingsActivity : AppCompatActivity() {
         val values = settingsBundle()
         SettingsContract.TARGET_PACKAGES.forEach { targetPackage ->
             runCatching {
-                sendBroadcast(Intent(SettingsContract.ACTION_UPDATE_SETTINGS).setPackage(targetPackage)
-                    .putExtra(SettingsContract.EXTRA_SETTINGS, values))
+                sendBroadcast(
+                    Intent(SettingsContract.ACTION_UPDATE_SETTINGS)
+                        .setPackage(targetPackage)
+                        .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+                        .putExtra(SettingsContract.EXTRA_SETTINGS, values),
+                )
             }.onFailure { Log.e("failed to push settings to $targetPackage", it) }
         }
     }

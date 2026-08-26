@@ -92,8 +92,13 @@ internal class BiliPlayerNoticeBridge(
 
     private fun resolveServiceInterface(): Class<*> {
         if (packageName != INTERNATIONAL_PACKAGE) {
-            runCatching {
-                return Class.forName(PINK_TOAST_SERVICE_INTERFACE, false, classLoader)
+            listOf(
+                PINK_TOAST_SERVICE_INTERFACE,
+                LEGACY_PINK_TOAST_SERVICE_INTERFACE,
+            ).forEach { className ->
+                runCatching {
+                    return Class.forName(className, false, classLoader)
+                }
             }
         }
         val implementation = Class.forName(WHITE_TOAST_SERVICE_IMPLEMENTATION, false, classLoader)
@@ -109,6 +114,8 @@ internal class BiliPlayerNoticeBridge(
         val preferredName = when {
             packageName == INTERNATIONAL_PACKAGE && show -> WHITE_SHOW_METHOD
             packageName == INTERNATIONAL_PACKAGE -> WHITE_DISMISS_METHOD
+            serviceInterface.name == LEGACY_PINK_TOAST_SERVICE_INTERFACE && show -> LEGACY_PINK_SHOW_METHOD
+            serviceInterface.name == LEGACY_PINK_TOAST_SERVICE_INTERFACE -> LEGACY_PINK_DISMISS_METHOD
             show -> "showToast"
             else -> "dismissToast"
         }
@@ -240,8 +247,11 @@ internal class BiliPlayerNoticeBridge(
     private companion object {
         const val PLAYER_TOAST_CLASS = "tv.danmaku.biliplayerv2.widget.toast.PlayerToast"
         const val PINK_TOAST_SERVICE_INTERFACE = "tv.danmaku.biliplayerv2.service.IToastService"
+        const val LEGACY_PINK_TOAST_SERVICE_INTERFACE = "tv.danmaku.biliplayerv2.service.i0"
         const val WHITE_TOAST_SERVICE_IMPLEMENTATION = "tv.danmaku.biliplayerimpl.toast.ToastService"
         const val INTERNATIONAL_PACKAGE = "com.bilibili.app.in"
+        const val LEGACY_PINK_SHOW_METHOD = "t2"
+        const val LEGACY_PINK_DISMISS_METHOD = "r"
         const val WHITE_SHOW_METHOD = "i2"
         const val WHITE_DISMISS_METHOD = "D0"
     }

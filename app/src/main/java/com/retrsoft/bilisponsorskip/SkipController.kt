@@ -9,7 +9,9 @@ import android.widget.Toast
 import java.lang.ref.WeakReference
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 internal class SkipController(
@@ -43,6 +45,8 @@ internal class SkipController(
     private val diagnosticWatchdogs = ConcurrentHashMap.newKeySet<VideoKey>()
     private val reportedFailures = ConcurrentHashMap.newKeySet<String>()
     private val reportedSettings = ConcurrentHashMap.newKeySet<String>()
+    private val uiStateListeners = CopyOnWriteArraySet<() -> Unit>()
+    private val uiNotificationScheduled = AtomicBoolean(false)
 
     @Volatile
     private var playerHookReady = false
@@ -74,6 +78,25 @@ internal class SkipController(
     @Volatile
     private var activeManualNoticeKey: String? = null
 
+    init {
+        settings.onSettingsChanged = ::notifyUiStateChanged
+    }
+
+    fun addUiStateListener(listener: () -> Unit) {
+        uiStateListeners += listener
+        mainHandler.post(listener)
+    }
+
+    private fun notifyUiStateChanged() {
+        if (!uiNotificationScheduled.compareAndSet(false, true)) return
+        mainHandler.post {
+            uiNotificationScheduled.set(false)
+            uiStateListeners.forEach { listener ->
+                runCatching(listener).onFailure { Log.e("UI state listener failed", it) }
+            }
+        }
+    }
+
     fun updateVideo(bvid: String, cid: String) {
         if (!bvid.startsWith("BV") || cid.isBlank() || cid == "0") return
         val preferences = settings.refresh()
@@ -86,6 +109,7 @@ internal class SkipController(
             currentPositionMs = 0
             clearManualSkipNotice()
             Log.d("video changed: ${next.bvid}+${next.cid}")
+            notifyUiStateChanged()
         }
         val cached = segmentCache[next]
         if (cached == null) ensureLoaded(next) else notifySegmentsFound(next, cached, preferences)
@@ -101,7 +125,10 @@ internal class SkipController(
     }
 
     fun updateDuration(valueMs: Int) {
-        if (valueMs > 0) durationMs = valueMs
+        if (valueMs > 0 && durationMs != valueMs) {
+            durationMs = valueMs
+            notifyUiStateChanged()
+        }
     }
 
     fun uiSnapshot(): UiSnapshot {
@@ -185,6 +212,7 @@ internal class SkipController(
                         if (it.uuid == segment.uuid) it.copy(votes = it.votes + if (type == 1) 1 else -1) else it
                     }
                 }
+                notifyUiStateChanged()
             }
             mainHandler.post { callback(result) }
         }
@@ -202,6 +230,7 @@ internal class SkipController(
                 segmentCache[key] = result.segments
                 retryAfter.remove(key)
                 Log.d("refreshed ${result.segments.size} special segment(s) for ${key.bvid}+${key.cid}")
+                notifyUiStateChanged()
             }
             mainHandler.post {
                 if (activeVideo.get() == key) callback(result)
@@ -351,6 +380,7 @@ internal class SkipController(
                         segmentCache[key] = result.segments
                         Log.d("loaded ${result.segments.size} special segment(s) for ${key.bvid}+${key.cid}")
                         notifySegmentsFound(key, result.segments, settings.current)
+                        notifyUiStateChanged()
                     }
 
                     is SponsorBlockClient.Result.Failure -> {
@@ -374,6 +404,7 @@ internal class SkipController(
     private fun reloadSegments(key: VideoKey) {
         segmentCache.remove(key)
         retryAfter.remove(key)
+        notifyUiStateChanged()
         ensureLoaded(key)
     }
 

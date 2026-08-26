@@ -31,6 +31,7 @@ class SettingsSyncReceiver : BroadcastReceiver() {
             context.sendBroadcast(
                 Intent(SettingsContract.ACTION_UPDATE_SETTINGS)
                     .setPackage(targetPackage)
+                    .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                     .putExtra(SettingsContract.EXTRA_SETTINGS, values),
             )
         }
@@ -81,6 +82,7 @@ class SettingsSyncReceiver : BroadcastReceiver() {
         context.sendBroadcast(
             Intent(SettingsContract.ACTION_UPDATE_SETTINGS)
                 .setPackage(targetPackage)
+                .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                 .putExtra(SettingsContract.EXTRA_SETTINGS, values),
         )
         Log.d("module settings sent to $targetPackage on process startup")
