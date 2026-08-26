@@ -23,10 +23,15 @@ internal class VideoIdentityHook(
 ) {
     private val storyControllers = WeakHashMap<Any, Any>()
 
+    @Volatile
+    private var lastResolvedBvid: String? = null
+
     fun install() {
         val installed = mutableListOf<String>()
         installPlayerUniteHooks()?.let(installed::add)
         installLegacyVideoDetailHook()?.let(installed::add)
+        installLegacyVideoDetailCallbacks()?.let(installed::add)
+        installLegacyVideoPageHooks()?.let(installed::add)
         installLegacyPlayerSourceHook()?.let(installed::add)
         installLegacyStoryHook()?.let(installed::add)
         if (installed.isEmpty()) {
@@ -84,6 +89,61 @@ internal class VideoIdentityHook(
         }
         if (methods.isEmpty()) return null
         return "legacy-detail(${viewModelClass.name}.${methods.joinToString { it.name }})"
+    }
+
+    /**
+     * White Bilibili 3.18.2 still exposes [LEGACY_VIDEO_DETAIL_CLASS], but no longer has the
+     * old video-detail ViewModel used above. The loaded detail is instead delivered to callback
+     * implementations declared directly inside VideoDetailsActivity. Resolve those callbacks by
+     * their parameter type so the hook does not depend on their short obfuscated class names.
+     */
+    private fun installLegacyVideoDetailCallbacks(): String? {
+        val detailClass = XposedHelpers.findClassIfExists(LEGACY_VIDEO_DETAIL_CLASS, classLoader) ?: return null
+        val activityClass = XposedHelpers.findClassIfExists(LEGACY_VIDEO_DETAILS_ACTIVITY, classLoader) ?: return null
+        val callbackClasses = LinkedHashSet<Class<*>>().apply {
+            addAll(activityClass.declaredClasses)
+            LEGACY_VIDEO_DETAIL_CALLBACK_CLASSES.mapNotNullTo(this) { className ->
+                XposedHelpers.findClassIfExists(className, classLoader)
+            }
+        }
+        val methods = callbackClasses.flatMap { callbackClass ->
+            callbackClass.declaredMethods.filter { method ->
+                !Modifier.isStatic(method.modifiers) &&
+                    method.returnType == Void.TYPE &&
+                    method.parameterTypes.contentEquals(arrayOf(detailClass))
+            }
+        }.distinctBy { it.toGenericString() }
+        methods.forEach { method ->
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    param.args.firstOrNull()?.let(::readLegacyVideoDetail)
+                }
+            })
+        }
+        if (methods.isEmpty()) return null
+        return "legacy-detail-callbacks(${methods.joinToString { "${it.declaringClass.simpleName}.${it.name}" }})"
+    }
+
+    /** Keep the active cid in sync when an old details page switches between parts. */
+    private fun installLegacyVideoPageHooks(): String? {
+        val pageClass = XposedHelpers.findClassIfExists(LEGACY_VIDEO_PAGE_CLASS, classLoader) ?: return null
+        val activityClass = XposedHelpers.findClassIfExists(LEGACY_VIDEO_DETAILS_ACTIVITY, classLoader) ?: return null
+        val methods = activityClass.declaredMethods.filter { method ->
+            !Modifier.isStatic(method.modifiers) &&
+                method.returnType == Void.TYPE &&
+                method.parameterCount in 1..2 &&
+                method.parameterTypes.all { it == pageClass }
+        }
+        methods.forEach { method ->
+            XposedBridge.hookMethod(method, object : XC_MethodHook() {
+                override fun beforeHookedMethod(param: MethodHookParam) {
+                    val page = param.args.lastOrNull { it != null } ?: return
+                    readLegacyVideoPage(page)
+                }
+            })
+        }
+        if (methods.isEmpty()) return null
+        return "legacy-pages(${activityClass.name}.${methods.joinToString { it.name }})"
     }
 
     private fun installLegacyPlayerSourceHook(): String? {
@@ -150,6 +210,12 @@ internal class VideoIdentityHook(
         )
     }
 
+    private fun readLegacyVideoPage(page: Any) {
+        val bvid = lastResolvedBvid ?: return
+        val cid = page.numberFieldOrNull(LEGACY_CID_FIELD) ?: return
+        updateVideo(bvid = bvid, aid = null, cid = cid)
+    }
+
     private fun readLegacyPlayerSource(source: Any) {
         updateVideo(
             bvid = source.stringOrNull(LEGACY_SOURCE_BVID_METHOD),
@@ -169,6 +235,7 @@ internal class VideoIdentityHook(
 
     private fun updateVideo(bvid: String?, aid: Long?, cid: Long?) {
         val identity = resolveVideoIdentity(bvid, aid, cid) ?: return
+        lastResolvedBvid = identity.bvid
         controller.updateVideo(identity.bvid, identity.cid)
     }
 
@@ -203,6 +270,14 @@ internal class VideoIdentityHook(
             "tv.danmaku.bili.videopage.data.view.model.BiliVideoDetail"
         const val LEGACY_VIDEO_DETAIL_VIEW_MODEL_CLASS =
             "tv.danmaku.bili.videopage.player.viewmodel.d"
+        const val LEGACY_VIDEO_DETAILS_ACTIVITY =
+            "com.bilibili.video.videodetail.VideoDetailsActivity"
+        const val LEGACY_VIDEO_PAGE_CLASS =
+            "tv.danmaku.bili.videopage.data.view.model.BiliVideoDetail\$Page"
+        val LEGACY_VIDEO_DETAIL_CALLBACK_CLASSES = listOf(
+            "com.bilibili.video.videodetail.VideoDetailsActivity\$f",
+            "com.bilibili.video.videodetail.VideoDetailsActivity\$g",
+        )
         const val LEGACY_BVID_FIELD = "mBvid"
         const val LEGACY_AID_FIELD = "mAvid"
         const val LEGACY_CID_FIELD = "mCid"

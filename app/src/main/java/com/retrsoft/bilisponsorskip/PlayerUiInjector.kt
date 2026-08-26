@@ -315,7 +315,8 @@ internal class PlayerUiInjector(
         if (!isDetailTitleStructure(view)) return false
         return view.hasAncestorWithIdName(VIDEO_INTRO_CONTAINER_ID_NAME) ||
             view.hasAncestorWithIdName(VIDEO_RECYCLER_ID_NAME) ||
-            view.hasAncestorWithIdName(LEGACY_VIDEO_RECYCLER_ID_NAME)
+            view.hasAncestorWithIdName(LEGACY_VIDEO_RECYCLER_ID_NAME) ||
+            view.hasAncestorWithIdName(LEGACY_DETAIL_PAGER_ID_NAME)
     }
 
     private fun isDetailTitleStructure(view: TextView): Boolean =
@@ -364,13 +365,23 @@ internal class PlayerUiInjector(
 
     private fun renderProgressMarkers(activity: Activity, snapshot: SkipController.UiSnapshot) {
         val decor = activity.window?.decorView ?: return
-        val activeViews = findAllViews(decor)
-            .filter(::isPlayerProgressView)
+        val allViews = findAllViews(decor)
+        val primaryViews = allViews
+            .filter { isPlayerProgressView(it) && isRenderableProgressView(it) }
             .toMutableSet()
         PROGRESS_ID_NAMES.forEach { idName ->
             val id = activity.resources.getIdentifier(idName, "id", activity.packageName)
             if (id == 0) return@forEach
-            findViewsById(decor, id).filterTo(activeViews) { it.isAttachedToWindow }
+            findViewsById(decor, id).filterTo(primaryViews, ::isRenderableProgressView)
+        }
+        // 3.18.x international builds temporarily keep bbplayer_halfscreen_seekbar at 0x0
+        // while controls are collapsed. In that state the thin full-width View at the bottom
+        // of control_container is the visible track, so use it only until a real SeekBar is
+        // renderable.
+        val activeViews = if (primaryViews.isNotEmpty()) {
+            primaryViews
+        } else {
+            allViews.filterTo(mutableSetOf(), ::isLegacyMiniProgressTrack)
         }
 
         activeViews.forEach { view ->
@@ -399,15 +410,33 @@ internal class PlayerUiInjector(
             (view is SeekBar && className.startsWith(PLAYER_SEEK_PACKAGE_PREFIX))
     }
 
+    private fun isRenderableProgressView(view: View): Boolean {
+        if (!view.isAttachedToWindow || !view.isShown || view.width <= 0 || view.height <= 0) return false
+        if (view.alpha <= MIN_VISIBLE_ALPHA) return false
+        val visibleRect = Rect()
+        return view.getGlobalVisibleRect(visibleRect) && !visibleRect.isEmpty
+    }
+
+    private fun isLegacyMiniProgressTrack(view: View): Boolean {
+        if (view.javaClass != View::class.java || !isRenderableProgressView(view)) return false
+        val density = view.resources.displayMetrics.density
+        return view.width >= LEGACY_MINI_TRACK_MIN_WIDTH_DP * density &&
+            view.height <= LEGACY_MINI_TRACK_MAX_HEIGHT_DP * density &&
+            view.width >= view.height * LEGACY_MINI_TRACK_MIN_ASPECT_RATIO &&
+            view.hasAncestorWithIdName(PLAYER_CONTROL_CONTAINER_ID_NAME)
+    }
+
     private fun logProgressCandidates(decor: View) {
         findAllViews(decor).forEach { view ->
             val className = view.javaClass.name
             val idName = view.resourceEntryName().orEmpty()
             if (
-                !className.startsWith("com.bilibili") ||
-                !(className.contains("seek", ignoreCase = true) || idName.contains("seek", ignoreCase = true))
+                !(className.contains("seek", ignoreCase = true) ||
+                    idName.contains("seek", ignoreCase = true) ||
+                    (view.javaClass == View::class.java &&
+                        view.hasAncestorWithIdName(PLAYER_CONTROL_CONTAINER_ID_NAME)))
             ) return@forEach
-            val signature = "candidate:$className:$idName"
+            val signature = "candidate:$className:$idName:${view.width}x${view.height}:${view.isShown}"
             if (loggedProgressClasses.add(signature)) {
                 Log.d(
                     "progress candidate: id=${idName.ifBlank { "none" }}; view=$className; " +
@@ -783,7 +812,9 @@ internal class PlayerUiInjector(
         const val VIDEO_INTRO_CONTAINER_ID_NAME = "fl_intro_container"
         const val VIDEO_RECYCLER_ID_NAME = "recycler"
         const val LEGACY_VIDEO_RECYCLER_ID_NAME = "recycler_view"
+        const val LEGACY_DETAIL_PAGER_ID_NAME = "pager_root"
         const val TITLE_ARROW_ID_NAME = "arrow"
+        const val PLAYER_CONTROL_CONTAINER_ID_NAME = "control_container"
         val PROGRESS_ID_NAMES = listOf(
             "bbplayer_halfscreen_seekbar",
             "bbplayer_fullscreen_seekbar",
@@ -811,6 +842,9 @@ internal class PlayerUiInjector(
         const val MIN_MARKER_WIDTH_DP = 2f
         const val MARKER_ALPHA = 235
         const val MIN_VISIBLE_ALPHA = 0.01f
+        const val LEGACY_MINI_TRACK_MIN_WIDTH_DP = 120f
+        const val LEGACY_MINI_TRACK_MAX_HEIGHT_DP = 8f
+        const val LEGACY_MINI_TRACK_MIN_ASPECT_RATIO = 20
 
         fun categoryColor(category: String, preview: Boolean): Int = Color.parseColor(
             when (category) {

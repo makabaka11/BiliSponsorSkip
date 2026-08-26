@@ -91,14 +91,18 @@ internal class BiliPlayerNoticeBridge(
     }
 
     private fun resolveServiceInterface(): Class<*> {
-        if (packageName != INTERNATIONAL_PACKAGE) {
+        val directCandidates = if (packageName == INTERNATIONAL_PACKAGE) {
+            listOf(LEGACY_WHITE_TOAST_SERVICE_INTERFACE)
+        } else {
             listOf(
                 PINK_TOAST_SERVICE_INTERFACE,
                 LEGACY_PINK_TOAST_SERVICE_INTERFACE,
-            ).forEach { className ->
-                runCatching {
-                    return Class.forName(className, false, classLoader)
-                }
+                LEGACY_WHITE_TOAST_SERVICE_INTERFACE,
+            )
+        }
+        directCandidates.forEach { className ->
+            runCatching {
+                return Class.forName(className, false, classLoader)
             }
         }
         val implementation = Class.forName(WHITE_TOAST_SERVICE_IMPLEMENTATION, false, classLoader)
@@ -112,6 +116,8 @@ internal class BiliPlayerNoticeBridge(
 
     private fun resolveToastMethod(show: Boolean): Method {
         val preferredName = when {
+            serviceInterface.name == LEGACY_WHITE_TOAST_SERVICE_INTERFACE && show -> LEGACY_WHITE_SHOW_METHOD
+            serviceInterface.name == LEGACY_WHITE_TOAST_SERVICE_INTERFACE -> LEGACY_WHITE_DISMISS_METHOD
             packageName == INTERNATIONAL_PACKAGE && show -> WHITE_SHOW_METHOD
             packageName == INTERNATIONAL_PACKAGE -> WHITE_DISMISS_METHOD
             serviceInterface.name == LEGACY_PINK_TOAST_SERVICE_INTERFACE && show -> LEGACY_PINK_SHOW_METHOD
@@ -248,10 +254,13 @@ internal class BiliPlayerNoticeBridge(
         const val PLAYER_TOAST_CLASS = "tv.danmaku.biliplayerv2.widget.toast.PlayerToast"
         const val PINK_TOAST_SERVICE_INTERFACE = "tv.danmaku.biliplayerv2.service.IToastService"
         const val LEGACY_PINK_TOAST_SERVICE_INTERFACE = "tv.danmaku.biliplayerv2.service.i0"
+        const val LEGACY_WHITE_TOAST_SERVICE_INTERFACE = "tv.danmaku.biliplayerv2.service.n0"
         const val WHITE_TOAST_SERVICE_IMPLEMENTATION = "tv.danmaku.biliplayerimpl.toast.ToastService"
         const val INTERNATIONAL_PACKAGE = "com.bilibili.app.in"
         const val LEGACY_PINK_SHOW_METHOD = "t2"
         const val LEGACY_PINK_DISMISS_METHOD = "r"
+        const val LEGACY_WHITE_SHOW_METHOD = "D1"
+        const val LEGACY_WHITE_DISMISS_METHOD = "q"
         const val WHITE_SHOW_METHOD = "i2"
         const val WHITE_DISMISS_METHOD = "D0"
     }
