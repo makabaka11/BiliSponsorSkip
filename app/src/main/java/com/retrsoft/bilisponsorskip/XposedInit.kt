@@ -105,6 +105,8 @@ class XposedInit : IXposedHookLoadPackage {
         }.onFailure { Log.e("failed to install video identity hooks", it) }
 
         Thread({
+            runCatching { playerNotice.install() }
+                .onFailure { Log.e("failed to install interactive player notice bridge", it) }
             runCatching {
                 PlayerHook(
                     lpparam.appInfo.sourceDir,
@@ -115,8 +117,6 @@ class XposedInit : IXposedHookLoadPackage {
             }.onFailure {
                 controller.reportPlayerFailure("Hook 安装", it)
             }
-            runCatching { playerNotice.install() }
-                .onFailure { Log.e("failed to install interactive player notice bridge", it) }
         }, "BiliSponsorSkip-dex").apply { isDaemon = true }.start()
     }
 

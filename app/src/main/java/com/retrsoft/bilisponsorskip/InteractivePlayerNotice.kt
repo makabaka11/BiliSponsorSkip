@@ -34,17 +34,23 @@ internal class BiliPlayerNoticeBridge(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val serviceRef = AtomicReference<WeakReference<Any>?>()
     private val activeToastRef = AtomicReference<Any?>()
+    private val implementationCandidates = LinkedHashSet<Class<*>>()
+    private val constructorHookedClasses = LinkedHashSet<Class<*>>()
 
     private lateinit var playerToastClass: Class<*>
     private lateinit var serviceInterface: Class<*>
     private lateinit var showMethod: Method
     private lateinit var dismissMethod: Method
+    private lateinit var symptomPatchId: String
 
     fun install() {
         playerToastClass = Class.forName(PLAYER_TOAST_CLASS, false, classLoader)
-        serviceInterface = resolveServiceInterface()
-        showMethod = resolveToastMethod(show = true)
-        dismissMethod = resolveToastMethod(show = false)
+        val binding = resolveServiceBinding()
+        serviceInterface = binding.serviceInterface
+        showMethod = binding.showMethod
+        dismissMethod = binding.dismissMethod
+        symptomPatchId = binding.patchId
+        installEagerImplementationCaptureHooks()
         ensureDexKitLoaded()
         DexKitBridge.create(apkPath).use { bridge ->
             if (!Process.is64Bit()) {
@@ -54,7 +60,8 @@ internal class BiliPlayerNoticeBridge(
             installServiceCaptureHooks(bridge)
         }
         Log.d(
-            "interactive player notice bridge installed: service=${serviceInterface.name}; " +
+            "interactive player notice bridge installed: patch=$symptomPatchId; " +
+                "service=${serviceInterface.name}; " +
                 "show=${showMethod.name}; dismiss=${dismissMethod.name}",
         )
     }
@@ -90,45 +97,41 @@ internal class BiliPlayerNoticeBridge(
         }
     }
 
-    private fun resolveServiceInterface(): Class<*> {
-        val directCandidates = if (packageName == INTERNATIONAL_PACKAGE) {
-            listOf(LEGACY_WHITE_TOAST_SERVICE_INTERFACE)
-        } else {
-            listOf(
-                PINK_TOAST_SERVICE_INTERFACE,
-                LEGACY_PINK_TOAST_SERVICE_INTERFACE,
-                LEGACY_WHITE_TOAST_SERVICE_INTERFACE,
-            )
+    private fun resolveServiceBinding(): PlayerNoticeServiceBinding {
+        val candidates = LinkedHashSet<Class<*>>()
+        KNOWN_TOAST_SERVICE_INTERFACES.forEach { className ->
+            runCatching { Class.forName(className, false, classLoader) }
+                .getOrNull()
+                ?.let(candidates::add)
         }
-        directCandidates.forEach { className ->
-            runCatching {
-                return Class.forName(className, false, classLoader)
+        runCatching { Class.forName(WHITE_TOAST_SERVICE_IMPLEMENTATION, false, classLoader) }
+            .getOrNull()
+            ?.let { implementation ->
+                implementationCandidates.add(implementation)
+                candidates.addAll(implementation.interfaces)
             }
-        }
-        val implementation = Class.forName(WHITE_TOAST_SERVICE_IMPLEMENTATION, false, classLoader)
-        return implementation.interfaces.firstOrNull { candidate ->
-            candidate.methods.count { method ->
-                method.returnType == Void.TYPE &&
-                    method.parameterTypes.contentEquals(arrayOf(playerToastClass))
-            } >= 2
-        } ?: error("white player toast service interface not found")
+        return PlayerNoticePatchSelector.select(
+            playerToastClass = playerToastClass,
+            serviceCandidates = candidates,
+            context = packageName,
+        )
     }
 
-    private fun resolveToastMethod(show: Boolean): Method {
-        val preferredName = when {
-            serviceInterface.name == LEGACY_WHITE_TOAST_SERVICE_INTERFACE && show -> LEGACY_WHITE_SHOW_METHOD
-            serviceInterface.name == LEGACY_WHITE_TOAST_SERVICE_INTERFACE -> LEGACY_WHITE_DISMISS_METHOD
-            packageName == INTERNATIONAL_PACKAGE && show -> WHITE_SHOW_METHOD
-            packageName == INTERNATIONAL_PACKAGE -> WHITE_DISMISS_METHOD
-            serviceInterface.name == LEGACY_PINK_TOAST_SERVICE_INTERFACE && show -> LEGACY_PINK_SHOW_METHOD
-            serviceInterface.name == LEGACY_PINK_TOAST_SERVICE_INTERFACE -> LEGACY_PINK_DISMISS_METHOD
-            show -> "showToast"
-            else -> "dismissToast"
-        }
-        return serviceInterface.methods.firstOrNull { method ->
-            method.name == preferredName && method.returnType == Void.TYPE &&
-                method.parameterTypes.contentEquals(arrayOf(playerToastClass))
-        } ?: error("player toast ${if (show) "show" else "dismiss"} method not found")
+    private fun installEagerImplementationCaptureHooks() {
+        implementationCandidates
+            .filter(serviceInterface::isAssignableFrom)
+            .forEach(::hookServiceConstructors)
+    }
+
+    private fun hookServiceConstructors(implementation: Class<*>) {
+        if (implementation.isInterface || Modifier.isAbstract(implementation.modifiers)) return
+        if (!constructorHookedClasses.add(implementation)) return
+        XposedBridge.hookAllConstructors(implementation, object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) {
+                captureService(param.thisObject)
+            }
+        })
+        Log.d("interactive notice constructor capture installed: ${implementation.name}")
     }
 
     private fun installServiceCaptureHooks(bridge: DexKitBridge) {
@@ -162,11 +165,7 @@ internal class BiliPlayerNoticeBridge(
             val method = runCatching { data.getMethodInstance(classLoader) }.getOrNull() ?: return@forEach
             val declaringClass = method.declaringClass
             if (!declaringClass.isInterface && !Modifier.isAbstract(declaringClass.modifiers) && hookedClasses.add(declaringClass)) {
-                XposedBridge.hookAllConstructors(declaringClass, object : XC_MethodHook() {
-                    override fun afterHookedMethod(param: MethodHookParam) {
-                        captureService(param.thisObject)
-                    }
-                })
+                hookServiceConstructors(declaringClass)
             }
             if (Modifier.isAbstract(method.modifiers) || !hookedMethods.add(method.toGenericString())) return@forEach
             XposedBridge.hookMethod(method, object : XC_MethodHook() {
@@ -252,16 +251,11 @@ internal class BiliPlayerNoticeBridge(
 
     private companion object {
         const val PLAYER_TOAST_CLASS = "tv.danmaku.biliplayerv2.widget.toast.PlayerToast"
-        const val PINK_TOAST_SERVICE_INTERFACE = "tv.danmaku.biliplayerv2.service.IToastService"
-        const val LEGACY_PINK_TOAST_SERVICE_INTERFACE = "tv.danmaku.biliplayerv2.service.i0"
-        const val LEGACY_WHITE_TOAST_SERVICE_INTERFACE = "tv.danmaku.biliplayerv2.service.n0"
         const val WHITE_TOAST_SERVICE_IMPLEMENTATION = "tv.danmaku.biliplayerimpl.toast.ToastService"
-        const val INTERNATIONAL_PACKAGE = "com.bilibili.app.in"
-        const val LEGACY_PINK_SHOW_METHOD = "t2"
-        const val LEGACY_PINK_DISMISS_METHOD = "r"
-        const val LEGACY_WHITE_SHOW_METHOD = "D1"
-        const val LEGACY_WHITE_DISMISS_METHOD = "q"
-        const val WHITE_SHOW_METHOD = "i2"
-        const val WHITE_DISMISS_METHOD = "D0"
+        val KNOWN_TOAST_SERVICE_INTERFACES = listOf(
+            "tv.danmaku.biliplayerv2.service.IToastService",
+            "tv.danmaku.biliplayerv2.service.i0",
+            "tv.danmaku.biliplayerv2.service.n0",
+        )
     }
 }

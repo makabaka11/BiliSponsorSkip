@@ -282,12 +282,18 @@ internal class SkipController(
                 preferences.categoryMode(it.category) == CategoryMode.MANUAL_SKIP &&
                     positionMs >= it.startMs && positionMs < it.endMs
             }
-            if (manualSegment == null ||
-                (!preferences.skipOnSeek && positionMs > manualSegment.startMs + SEGMENT_START_WINDOW_MS)
+            val noticeAlreadyActive = manualSegment != null &&
+                activeManualNoticeKey == manualNoticeKey(key, manualSegment)
+            if (manualSegment == null || !shouldPresentManualSkipNotice(
+                    skipOnSeek = preferences.skipOnSeek,
+                    positionMs = positionMs,
+                    segmentStartMs = manualSegment.startMs,
+                    noticeAlreadyActive = noticeAlreadyActive,
+                )
             ) {
                 clearManualSkipNotice()
             } else {
-                showManualSkipNotice(key, manualSegment, positionMs)
+                showManualSkipNotice(key, manualSegment)
             }
             return
         }
@@ -312,20 +318,27 @@ internal class SkipController(
     private fun showManualSkipNotice(
         key: VideoKey,
         segment: SponsorBlockClient.Segment,
-        positionMs: Int,
     ) {
-        val noticeKey = "${key.bvid}:${key.cid}:${segment.uuid}:${segment.startMs}:${segment.endMs}"
+        val noticeKey = manualNoticeKey(key, segment)
         if (activeManualNoticeKey == noticeKey) return
         clearManualSkipNotice()
         activeManualNoticeKey = noticeKey
-        val remainingMs = (segment.endMs - positionMs).coerceAtLeast(1_000)
         val shown = playerNotice?.showAction(
             message = "${segment.category.categoryLabel()}片段",
             actionText = "跳过",
-            durationMs = remainingMs.toLong().coerceIn(3_000L, 100_000L),
+            // PlayerToast measures duration using wall-clock time, while segment bounds use
+            // playback time. Its 100000 ms sentinel disables native auto-expiry; the controller
+            // still dismisses the notice as soon as playback leaves this segment.
+            durationMs = PERSISTENT_PLAYER_NOTICE_DURATION_MS,
             onAction = { skipManualSegment(key, segment) },
             onDismiss = {},
         ) == true
+        if (shown) {
+            Log.d(
+                "manual skip notice shown for ${segment.startMs}..${segment.endMs}; " +
+                    "lifetime=until-segment-exit",
+            )
+        }
         if (!shown) {
             Log.e("interactive player notice unavailable for manual segment: ${segment.category}")
             showToast("检测到可手动跳过的${segment.category.categoryLabel()}片段")
@@ -358,6 +371,9 @@ internal class SkipController(
         activeManualNoticeKey = null
         playerNotice?.dismiss()
     }
+
+    private fun manualNoticeKey(key: VideoKey, segment: SponsorBlockClient.Segment): String =
+        "${key.bvid}:${key.cid}:${segment.uuid}:${segment.startMs}:${segment.endMs}"
 
     private fun ensureLoaded(key: VideoKey) {
         if (System.currentTimeMillis() < (retryAfter[key] ?: 0L)) return
@@ -539,6 +555,7 @@ internal class SkipController(
         const val CHECK_INTERVAL_MS = 750L
         const val SEEK_COOLDOWN_MS = 3_000L
         const val SEGMENT_START_WINDOW_MS = 2_000
+        const val PERSISTENT_PLAYER_NOTICE_DURATION_MS = 100_000L
         const val MAX_ATTEMPTS = 3
         const val RETRY_DELAY_MS = 1_000L
         const val TRANSIENT_FAILURE_COOLDOWN_MS = 30_000L
@@ -547,3 +564,10 @@ internal class SkipController(
         const val MAX_DIAGNOSTIC_TEXT_LENGTH = 180
     }
 }
+
+internal fun shouldPresentManualSkipNotice(
+    skipOnSeek: Boolean,
+    positionMs: Int,
+    segmentStartMs: Int,
+    noticeAlreadyActive: Boolean,
+): Boolean = noticeAlreadyActive || skipOnSeek || positionMs <= segmentStartMs + 2_000
