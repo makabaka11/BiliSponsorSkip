@@ -36,6 +36,7 @@
 
 ```text
 https://www.bsbsb.top/api/skipSegments/{SHA256(bvid)[0..4]}
+```
 
 保留当前分 P、actionType=skip 且分类已启用的片段。
 
