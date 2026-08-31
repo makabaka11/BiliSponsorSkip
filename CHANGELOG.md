@@ -2,7 +2,7 @@
 
 本项目遵循[语义化版本](https://semver.org/lang/zh-CN/)，发布日期以 GitHub Release 为准。
 
-## Unreleased
+## 1.3.3
 
 - 为视频详细信息界面（非全屏界面）播放器控件收起时画面下方的进度条也提供了片段标记。
 
