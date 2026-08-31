@@ -374,14 +374,17 @@ internal class PlayerUiInjector(
             if (id == 0) return@forEach
             findViewsById(decor, id).filterTo(primaryViews, ::isRenderableProgressView)
         }
-        // 3.18.x international builds temporarily keep bbplayer_halfscreen_seekbar at 0x0
-        // while controls are collapsed. In that state the thin full-width View at the bottom
-        // of control_container is the visible track, so use it only until a real SeekBar is
-        // renderable.
+        // International detail pages keep their interactive half-screen SeekBar at 0x0 while
+        // controls are collapsed. The player then mounts a dedicated non-interactive progress
+        // View in its function-widget layer at the bottom of video_area. Match its observed
+        // drawing/update structure instead of relying on its obfuscated class name. Older builds
+        // put a plain thin View in control_container instead.
         val activeViews = if (primaryViews.isNotEmpty()) {
             primaryViews
         } else {
-            allViews.filterTo(mutableSetOf(), ::isLegacyMiniProgressTrack)
+            val playerViewport = findPlayerViewport(allViews)
+            allViews.filterTo(mutableSetOf()) { isFunctionWidgetMiniProgressView(it, playerViewport) }
+                .ifEmpty { allViews.filterTo(mutableSetOf(), ::isLegacyMiniProgressTrack) }
         }
 
         activeViews.forEach { view ->
@@ -426,21 +429,78 @@ internal class PlayerUiInjector(
             view.hasAncestorWithIdName(PLAYER_CONTROL_CONTAINER_ID_NAME)
     }
 
+    private fun isFunctionWidgetMiniProgressView(view: View, playerViewport: Rect?): Boolean {
+        if (!isRenderableProgressView(view)) return false
+        if (view.javaClass.superclass != View::class.java) return false
+        val parentClass = (view.parent as? View)?.javaClass ?: return false
+        if (!isPlayerFunctionContainer(parentClass)) return false
+        if (!hasMiniProgressStructure(view.javaClass)) return false
+        if (playerViewport == null) return false
+
+        val viewRect = Rect()
+        if (!view.getGlobalVisibleRect(viewRect) || viewRect.isEmpty) return false
+        val density = view.resources.displayMetrics.density
+        return viewRect.width() >= playerViewport.width() * MINI_PROGRESS_MIN_WIDTH_RATIO &&
+            viewRect.height() <= MINI_PROGRESS_MAX_HEIGHT_DP * density &&
+            kotlin.math.abs(viewRect.bottom - playerViewport.bottom) <= MINI_PROGRESS_BOTTOM_SLOP_DP * density
+    }
+
+    private fun findPlayerViewport(allViews: List<View>): Rect? {
+        PLAYER_VIEWPORT_ID_NAMES.forEach { idName ->
+            val view = allViews.firstOrNull {
+                it.resourceEntryName() == idName && isRenderableProgressView(it)
+            } ?: return@forEach
+            val rect = Rect()
+            if (view.getGlobalVisibleRect(rect) && !rect.isEmpty) return rect
+        }
+        return null
+    }
+
+    private fun hasMiniProgressStructure(viewClass: Class<*>): Boolean = runCatching {
+        val fields = viewClass.declaredFields
+        val methods = viewClass.declaredMethods
+        fields.any { it.type == Paint::class.java } &&
+            fields.any { it.type == java.lang.Float.TYPE } &&
+            methods.any {
+                it.name == "onDraw" && it.returnType == java.lang.Void.TYPE &&
+                    it.parameterTypes.contentEquals(arrayOf(Canvas::class.java))
+            }
+    }.getOrDefault(false)
+
+    private fun isPlayerFunctionContainer(parentClass: Class<*>): Boolean =
+        parentClass.name.startsWith(PLAYER_FUNCTION_WIDGET_PACKAGE_PREFIX) ||
+            parentClass.interfaces.any { it.name == PLAYER_FUNCTION_CONTAINER_INTERFACE }
+
     private fun logProgressCandidates(decor: View) {
-        findAllViews(decor).forEach { view ->
+        val allViews = findAllViews(decor)
+        val playerViewport = findPlayerViewport(allViews)
+        allViews.forEach { view ->
             val className = view.javaClass.name
             val idName = view.resourceEntryName().orEmpty()
+            val viewRect = Rect()
+            val hasViewRect = view.getGlobalVisibleRect(viewRect) && !viewRect.isEmpty
+            val density = view.resources.displayMetrics.density
+            val thinAtVideoBottom = playerViewport != null && hasViewRect && view.isShown &&
+                viewRect.width() >= playerViewport.width() * PROGRESS_DIAGNOSTIC_MIN_WIDTH_RATIO &&
+                viewRect.height() <= PROGRESS_DIAGNOSTIC_MAX_HEIGHT_DP * density &&
+                kotlin.math.abs(viewRect.bottom - playerViewport.bottom) <=
+                PROGRESS_DIAGNOSTIC_BOTTOM_SLOP_DP * density
             if (
                 !(className.contains("seek", ignoreCase = true) ||
                     idName.contains("seek", ignoreCase = true) ||
+                    thinAtVideoBottom ||
                     (view.javaClass == View::class.java &&
                         view.hasAncestorWithIdName(PLAYER_CONTROL_CONTAINER_ID_NAME)))
             ) return@forEach
-            val signature = "candidate:$className:$idName:${view.width}x${view.height}:${view.isShown}"
+            val parent = view.parent as? View
+            val signature =
+                "candidate:$className:$idName:${view.width}x${view.height}:${view.isShown}:${viewRect.flattenToString()}"
             if (loggedProgressClasses.add(signature)) {
                 Log.d(
                     "progress candidate: id=${idName.ifBlank { "none" }}; view=$className; " +
-                        "size=${view.width}x${view.height}; shown=${view.isShown}; alpha=${view.alpha}",
+                        "size=${view.width}x${view.height}; shown=${view.isShown}; alpha=${view.alpha}; " +
+                        "rect=${viewRect.flattenToString()}; " +
+                        "parent=${parent?.resourceEntryName() ?: "none"}/${parent?.javaClass?.name ?: "none"}",
                 )
             }
         }
@@ -815,6 +875,15 @@ internal class PlayerUiInjector(
         const val LEGACY_DETAIL_PAGER_ID_NAME = "pager_root"
         const val TITLE_ARROW_ID_NAME = "arrow"
         const val PLAYER_CONTROL_CONTAINER_ID_NAME = "control_container"
+        val PLAYER_VIEWPORT_ID_NAMES = listOf(
+            PLAYER_CONTROL_CONTAINER_ID_NAME,
+            "video_area_float_layer_container",
+            "video_area",
+        )
+        const val PLAYER_FUNCTION_WIDGET_PACKAGE_PREFIX =
+            "tv.danmaku.biliplayerimpl.functionwidget."
+        const val PLAYER_FUNCTION_CONTAINER_INTERFACE =
+            "tv.danmaku.biliplayerv2.widget.IFunctionContainer"
         val PROGRESS_ID_NAMES = listOf(
             "bbplayer_halfscreen_seekbar",
             "bbplayer_fullscreen_seekbar",
@@ -845,6 +914,12 @@ internal class PlayerUiInjector(
         const val LEGACY_MINI_TRACK_MIN_WIDTH_DP = 120f
         const val LEGACY_MINI_TRACK_MAX_HEIGHT_DP = 8f
         const val LEGACY_MINI_TRACK_MIN_ASPECT_RATIO = 20
+        const val MINI_PROGRESS_MIN_WIDTH_RATIO = 0.6f
+        const val MINI_PROGRESS_MAX_HEIGHT_DP = 12f
+        const val MINI_PROGRESS_BOTTOM_SLOP_DP = 8f
+        const val PROGRESS_DIAGNOSTIC_MIN_WIDTH_RATIO = 0.6f
+        const val PROGRESS_DIAGNOSTIC_MAX_HEIGHT_DP = 24f
+        const val PROGRESS_DIAGNOSTIC_BOTTOM_SLOP_DP = 8f
 
         fun categoryColor(category: String, preview: Boolean): Int = Color.parseColor(
             when (category) {
