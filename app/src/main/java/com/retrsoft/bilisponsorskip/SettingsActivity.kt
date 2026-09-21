@@ -14,6 +14,7 @@ import android.text.style.StyleSpan
 import android.text.InputType
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -29,6 +30,7 @@ import androidx.preference.PreferenceViewHolder
 import androidx.preference.SwitchPreferenceCompat
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.color.DynamicColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.CircularProgressIndicator
 import java.lang.ref.WeakReference
 import java.util.Locale
@@ -100,6 +102,7 @@ class SettingsActivity : AppCompatActivity() {
         private lateinit var dataCategory: RefreshPreferenceCategory
         private lateinit var remoteStats: Preference
         private lateinit var localStats: Preference
+        private lateinit var versionPreference: Preference
         private var remoteLoading = false
         private var remoteLoadingStartedAt = 0L
 
@@ -107,6 +110,7 @@ class SettingsActivity : AppCompatActivity() {
             preferenceScreen = createScreen()
             refreshLocalStats()
             loadRemoteStats()
+            checkForUpdates()
         }
 
         override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -218,7 +222,13 @@ class SettingsActivity : AppCompatActivity() {
             addPreference(category("使用说明"))
             addPreference(info("修改设置后重新打开视频即可生效。LSPosed 中需启用模块并勾选对应的 B 站客户端。"))
             addPreference(category("关于"))
-            addPreference(info("版本", host.installedVersionName()))
+            versionPreference = link(
+                "版本",
+                host.installedVersionName(),
+                UpdateChecker.LATEST_RELEASE_PAGE_URL,
+            ).apply { widgetLayoutResource = R.layout.preference_widget_chevron }
+            addPreference(versionPreference)
+            addPreference(action("支持开发者", "给开发者买瓶冰可乐", ::showDeveloperSupportDialog))
             addPreference(link("作者", "github.com/makabaka11", "https://github.com/makabaka11"))
             addPreference(link("Telegram 频道", "t.me/bilisponsorskip", "https://t.me/bilisponsorskip"))
             addPreference(link("联系", "ded000@retr0.xyz", "mailto:ded000@retr0.xyz"))
@@ -246,6 +256,17 @@ class SettingsActivity : AppCompatActivity() {
 
         private fun info(titleValue: String, summaryValue: String) = info(summaryValue).apply { title = titleValue }
 
+        private fun action(titleValue: String, summaryValue: String, onClick: () -> Unit) = Preference(host).apply {
+            title = titleValue
+            summary = summaryValue
+            isIconSpaceReserved = false
+            widgetLayoutResource = R.layout.preference_widget_chevron
+            setOnPreferenceClickListener {
+                onClick()
+                true
+            }
+        }
+
         private fun link(titleValue: String, summaryValue: String, uri: String) = Preference(host).apply {
             title = titleValue
             summary = summaryValue
@@ -257,6 +278,32 @@ class SettingsActivity : AppCompatActivity() {
                 }.onFailure { host.toast("无法打开链接") }
                 true
             }
+        }
+
+        private fun showDeveloperSupportDialog() {
+            val image = ImageView(host).apply {
+                setImageResource(R.drawable.developer_donation_qr)
+                adjustViewBounds = true
+                maxHeight = (resources.displayMetrics.heightPixels * 0.65f).toInt()
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                contentDescription = "开发者赞赏码"
+            }
+            val horizontalPadding = host.dp(16)
+            val container = FrameLayout(host).apply {
+                setPadding(horizontalPadding, 0, horizontalPadding, 0)
+                addView(
+                    image,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.WRAP_CONTENT,
+                    ),
+                )
+            }
+            MaterialAlertDialogBuilder(host)
+                .setTitle("支持开发者")
+                .setView(container)
+                .setPositiveButton("关闭", null)
+                .show()
         }
 
         fun refreshLocalStats() {
@@ -308,6 +355,21 @@ class SettingsActivity : AppCompatActivity() {
                     }, remaining)
                 }
             }, "BiliSponsorSkip-user-stats").apply { isDaemon = true }.start()
+        }
+
+        private fun checkForUpdates() {
+            val installedVersion = host.installedVersionName()
+            Thread({
+                val release = UpdateChecker().check(installedVersion)
+                if (release?.updateAvailable != true) return@Thread
+                host.runOnUiThread {
+                    if (!isAdded || !::versionPreference.isInitialized) return@runOnUiThread
+                    versionPreference.summary = boldValues(
+                        "$installedVersion · 有新版本 ${release.tagName}",
+                        "有新版本 ${release.tagName}",
+                    )
+                }
+            }, "BiliSponsorSkip-update-check").apply { isDaemon = true }.start()
         }
 
         private fun formatMinutes(value: Double): String {

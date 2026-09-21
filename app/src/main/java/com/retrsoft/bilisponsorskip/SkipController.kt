@@ -64,6 +64,9 @@ internal class SkipController(
     private var lastCheckAt = 0L
 
     @Volatile
+    private var lastCheckedPositionMs: Int? = null
+
+    @Volatile
     private var suppressUntil = 0L
 
     @Volatile
@@ -107,6 +110,9 @@ internal class SkipController(
         if (activeVideo.getAndSet(next) != next) {
             durationMs = 0
             currentPositionMs = 0
+            lastCheckAt = 0L
+            lastCheckedPositionMs = null
+            suppressUntil = 0L
             clearManualSkipNotice()
             Log.d("video changed: ${next.bvid}+${next.cid}")
             notifyUiStateChanged()
@@ -264,7 +270,10 @@ internal class SkipController(
         val now = System.currentTimeMillis()
         lastPositionAt = now
         if (now < suppressUntil || now - lastCheckAt < CHECK_INTERVAL_MS) return
+        val previousCheckedPositionMs = lastCheckedPositionMs
+        val elapsedSincePreviousCheckMs = if (lastCheckAt > 0L) now - lastCheckAt else null
         lastCheckAt = now
+        lastCheckedPositionMs = positionMs
 
         val key = activeVideo.get() ?: return
         val preferences = settings.current
@@ -277,11 +286,23 @@ internal class SkipController(
             preferences.categoryMode(it.category) == CategoryMode.AUTO_SKIP &&
                 positionMs >= it.startMs && positionMs < it.endMs
         }
+        val enteredContinuously = segmentEnteredContinuously(
+            previousPositionMs = previousCheckedPositionMs,
+            currentPositionMs = positionMs,
+            segmentStartMs = segment?.startMs,
+            elapsedMs = elapsedSincePreviousCheckMs,
+        )
         if (segment == null) {
             val manualSegment = segments.firstOrNull {
                 preferences.categoryMode(it.category) == CategoryMode.MANUAL_SKIP &&
                     positionMs >= it.startMs && positionMs < it.endMs
             }
+            val manualSegmentEnteredContinuously = segmentEnteredContinuously(
+                previousPositionMs = previousCheckedPositionMs,
+                currentPositionMs = positionMs,
+                segmentStartMs = manualSegment?.startMs,
+                elapsedMs = elapsedSincePreviousCheckMs,
+            )
             val noticeAlreadyActive = manualSegment != null &&
                 activeManualNoticeKey == manualNoticeKey(key, manualSegment)
             if (manualSegment == null || !shouldPresentManualSkipNotice(
@@ -289,6 +310,7 @@ internal class SkipController(
                     positionMs = positionMs,
                     segmentStartMs = manualSegment.startMs,
                     noticeAlreadyActive = noticeAlreadyActive,
+                    enteredContinuously = manualSegmentEnteredContinuously,
                 )
             ) {
                 clearManualSkipNotice()
@@ -298,7 +320,13 @@ internal class SkipController(
             return
         }
         clearManualSkipNotice()
-        if (!preferences.skipOnSeek && positionMs > segment.startMs + SEGMENT_START_WINDOW_MS) return
+        if (!shouldAutoSkipSegment(
+                skipOnSeek = preferences.skipOnSeek,
+                positionMs = positionMs,
+                segmentStartMs = segment.startMs,
+                enteredContinuously = enteredContinuously,
+            )
+        ) return
         val player = playerRef?.get() ?: run {
             reportPlayerFailure("播放器实例", detail = "已进入片段，但播放器引用为空")
             return
@@ -570,4 +598,40 @@ internal fun shouldPresentManualSkipNotice(
     positionMs: Int,
     segmentStartMs: Int,
     noticeAlreadyActive: Boolean,
-): Boolean = noticeAlreadyActive || skipOnSeek || positionMs <= segmentStartMs + 2_000
+    enteredContinuously: Boolean = false,
+): Boolean = noticeAlreadyActive || skipOnSeek || enteredContinuously ||
+    positionMs <= segmentStartMs + 2_000
+
+internal fun shouldAutoSkipSegment(
+    skipOnSeek: Boolean,
+    positionMs: Int,
+    segmentStartMs: Int,
+    enteredContinuously: Boolean,
+): Boolean = skipOnSeek || enteredContinuously || positionMs <= segmentStartMs + 2_000
+
+internal fun segmentEnteredContinuously(
+    previousPositionMs: Int?,
+    currentPositionMs: Int,
+    segmentStartMs: Int?,
+    elapsedMs: Long?,
+): Boolean {
+    if (
+        previousPositionMs == null ||
+        segmentStartMs == null ||
+        elapsedMs == null ||
+        elapsedMs !in 1..MAX_CONTINUOUS_SAMPLE_GAP_MS ||
+        previousPositionMs >= segmentStartMs ||
+        currentPositionMs < segmentStartMs
+    ) return false
+
+    val advancedMs = currentPositionMs.toLong() - previousPositionMs
+    val maximumContinuousAdvanceMs =
+        elapsedMs * MAX_CONTINUOUS_PLAYBACK_RATE + CONTINUOUS_PLAYBACK_TOLERANCE_MS
+    return advancedMs in 0..maximumContinuousAdvanceMs
+}
+
+// Current pink and white clients select at most 3x for long-press playback.
+// Keep a small timing allowance without treating an arbitrary seek as continuous playback.
+private const val MAX_CONTINUOUS_PLAYBACK_RATE = 3L
+private const val CONTINUOUS_PLAYBACK_TOLERANCE_MS = 750L
+private const val MAX_CONTINUOUS_SAMPLE_GAP_MS = 5_000L

@@ -52,4 +52,65 @@ class SkipControllerManualNoticeTest {
             ),
         )
     }
+
+    @Test
+    fun longPressSpeedPlaybackCountsAsContinuousSegmentEntry() {
+        val enteredContinuously = segmentEnteredContinuously(
+            previousPositionMs = 9_000,
+            currentPositionMs = 12_500,
+            segmentStartMs = 10_000,
+            elapsedMs = 1_200,
+        )
+
+        assertTrue(enteredContinuously)
+        assertTrue(
+            shouldAutoSkipSegment(
+                skipOnSeek = false,
+                positionMs = 12_500,
+                segmentStartMs = 10_000,
+                enteredContinuously = enteredContinuously,
+            ),
+        )
+        assertTrue(
+            shouldPresentManualSkipNotice(
+                skipOnSeek = false,
+                positionMs = 12_500,
+                segmentStartMs = 10_000,
+                noticeAlreadyActive = false,
+                enteredContinuously = enteredContinuously,
+            ),
+        )
+    }
+
+    @Test
+    fun realSeekIntoMiddleRemainsSuppressed() {
+        val enteredContinuously = segmentEnteredContinuously(
+            previousPositionMs = 8_000,
+            currentPositionMs = 25_000,
+            segmentStartMs = 10_000,
+            elapsedMs = 800,
+        )
+
+        assertFalse(enteredContinuously)
+        assertFalse(
+            shouldAutoSkipSegment(
+                skipOnSeek = false,
+                positionMs = 25_000,
+                segmentStartMs = 10_000,
+                enteredContinuously = enteredContinuously,
+            ),
+        )
+    }
+
+    @Test
+    fun stalePlaybackSampleDoesNotHideASeek() {
+        assertFalse(
+            segmentEnteredContinuously(
+                previousPositionMs = 9_000,
+                currentPositionMs = 12_500,
+                segmentStartMs = 10_000,
+                elapsedMs = 6_000,
+            ),
+        )
+    }
 }
