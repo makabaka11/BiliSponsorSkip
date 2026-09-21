@@ -37,7 +37,10 @@ internal enum class CategoryMode(val persistedValue: String) {
 internal fun SettingsSnapshot.categoryMode(category: String): CategoryMode =
     categoryModes[category] ?: CategoryMode.DISABLED
 
-internal class SettingsRepository(private val application: Application) {
+internal class SettingsRepository(
+    private val application: Application,
+    private val loadedModulePath: String?,
+) {
     private val preferences = XSharedPreferences(MODULE_PACKAGE)
     private val mirrorPreferences = application.getSharedPreferences(MIRROR_PREFERENCES, Context.MODE_PRIVATE)
 
@@ -50,6 +53,10 @@ internal class SettingsRepository(private val application: Application) {
 
     @Volatile
     var onSettingsChanged: (() -> Unit)? = null
+
+    @Volatile
+    var standaloneModuleScopeConfirmed: Boolean = false
+        private set
 
     fun refresh(): SettingsSnapshot {
         val updated = loadCurrentSettings()
@@ -129,7 +136,8 @@ internal class SettingsRepository(private val application: Application) {
                     "${SettingsContract.MODULE_PACKAGE}.SettingsSyncReceiver",
                 )
                 .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-                .putExtra(SettingsContract.EXTRA_TARGET_PACKAGE, application.packageName),
+                .putExtra(SettingsContract.EXTRA_TARGET_PACKAGE, application.packageName)
+                .putExtra(SettingsContract.EXTRA_LOADED_MODULE_PATH, loadedModulePath),
         )
     }
 
@@ -139,6 +147,13 @@ internal class SettingsRepository(private val application: Application) {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action != SettingsContract.ACTION_UPDATE_SETTINGS) return
                 val values = intent.getBundleExtra(SettingsContract.EXTRA_SETTINGS) ?: return
+                if (
+                    intent.getStringExtra(SettingsContract.EXTRA_SETTINGS_SOURCE_PACKAGE) ==
+                    SettingsContract.MODULE_PACKAGE &&
+                    intent.getBooleanExtra(SettingsContract.EXTRA_STANDALONE_SCOPE_ACTIVE, false)
+                ) {
+                    standaloneModuleScopeConfirmed = true
+                }
                 val editor = mirrorPreferences.edit().clear().putBoolean(MIRROR_READY, true)
                 values.keySet().forEach { key ->
                     when (val value = values.get(key)) {
@@ -250,6 +265,9 @@ internal object SettingsContract {
     const val ACTION_REQUEST_MODULE_SETTINGS = "com.retrsoft.bilisponsorskip.REQUEST_MODULE_SETTINGS"
     const val ACTION_RECORD_LOCAL_SKIP = "com.retrsoft.bilisponsorskip.RECORD_LOCAL_SKIP"
     const val EXTRA_SETTINGS = "settings"
+    const val EXTRA_SETTINGS_SOURCE_PACKAGE = "settings_source_package"
+    const val EXTRA_LOADED_MODULE_PATH = "loaded_module_path"
+    const val EXTRA_STANDALONE_SCOPE_ACTIVE = "standalone_scope_active"
     const val EXTRA_TARGET_PACKAGE = "target_package"
     const val EXTRA_SAVED_DURATION_MS = "saved_duration_ms"
     const val EXTRA_STATS_PACKAGE = "stats_package"

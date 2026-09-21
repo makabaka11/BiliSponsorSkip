@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.preference.PreferenceManager
+import java.io.File
 
 class SettingsSyncReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
@@ -32,6 +33,7 @@ class SettingsSyncReceiver : BroadcastReceiver() {
                 Intent(SettingsContract.ACTION_UPDATE_SETTINGS)
                     .setPackage(targetPackage)
                     .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+                    .putExtra(SettingsContract.EXTRA_SETTINGS_SOURCE_PACKAGE, context.packageName)
                     .putExtra(SettingsContract.EXTRA_SETTINGS, values),
             )
         }
@@ -42,6 +44,10 @@ class SettingsSyncReceiver : BroadcastReceiver() {
         val targetPackage = intent.getStringExtra(SettingsContract.EXTRA_TARGET_PACKAGE)
             ?.takeIf { it in SettingsContract.TARGET_PACKAGES }
             ?: return
+        val standaloneScopeActive = sameApkPath(
+            intent.getStringExtra(SettingsContract.EXTRA_LOADED_MODULE_PATH),
+            context.applicationInfo.sourceDir,
+        )
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
         val defaults = SettingsSnapshot()
         val snapshot = defaults.copy(
@@ -83,8 +89,20 @@ class SettingsSyncReceiver : BroadcastReceiver() {
             Intent(SettingsContract.ACTION_UPDATE_SETTINGS)
                 .setPackage(targetPackage)
                 .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+                .putExtra(SettingsContract.EXTRA_SETTINGS_SOURCE_PACKAGE, context.packageName)
+                .putExtra(SettingsContract.EXTRA_STANDALONE_SCOPE_ACTIVE, standaloneScopeActive)
                 .putExtra(SettingsContract.EXTRA_SETTINGS, values),
         )
-        Log.d("module settings sent to $targetPackage on process startup")
+        Log.d(
+            "module settings sent to $targetPackage on process startup; " +
+                "standaloneScopeActive=$standaloneScopeActive",
+        )
     }
+}
+
+internal fun sameApkPath(loadedModulePath: String?, installedModulePath: String?): Boolean {
+    if (loadedModulePath.isNullOrBlank() || installedModulePath.isNullOrBlank()) return false
+    return runCatching {
+        File(loadedModulePath).canonicalFile == File(installedModulePath).canonicalFile
+    }.getOrDefault(false)
 }

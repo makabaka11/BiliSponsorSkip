@@ -532,6 +532,7 @@ class SettingsActivity : AppCompatActivity() {
                     Intent(SettingsContract.ACTION_UPDATE_SETTINGS)
                         .setPackage(targetPackage)
                         .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
+                        .putExtra(SettingsContract.EXTRA_SETTINGS_SOURCE_PACKAGE, packageName)
                         .putExtra(SettingsContract.EXTRA_SETTINGS, values),
                 )
             }.onFailure { Log.e("failed to push settings to $targetPackage", it) }

@@ -19,8 +19,10 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import java.lang.reflect.Proxy
+import java.util.zip.ZipFile
 
 internal class BiliSettingsEntryInjector(
     private val settings: SettingsRepository,
@@ -94,32 +96,46 @@ internal class BiliSettingsEntryInjector(
     }
 
     private fun openSettings(activity: Activity) {
-        val explicit = Intent().setClassName(
-            SettingsContract.MODULE_PACKAGE,
-            "${SettingsContract.MODULE_PACKAGE}.SettingsActivity",
+        val signals = SettingsLaunchSignals(
+            hostApkVerifiedNotLspatch = hostApkVerifiedNotLspatch(activity),
+            frameworkApiAvailable = frameworkApiAvailable(),
+            standaloneModuleScopeConfirmed = settings.standaloneModuleScopeConfirmed,
         )
-        val candidates = listOf(
-            explicit,
-            Intent(SettingsContract.ACTION_OPEN_SETTINGS)
-                .addCategory(Intent.CATEGORY_DEFAULT),
-            Intent.createChooser(Intent(explicit), "打开哔哩空降助手设置"),
-        ).map { intent ->
-            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
-        }
-        candidates.forEachIndexed { index, standalone ->
+        if (selectSettingsLaunchMode(signals) == SettingsLaunchMode.STANDALONE) {
+            val standalone = Intent().setClassName(
+                SettingsContract.MODULE_PACKAGE,
+                "${SettingsContract.MODULE_PACKAGE}.SettingsActivity",
+            ).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
             try {
                 activity.startActivity(standalone)
-                Log.d("opened standalone module settings from Bili settings: strategy=$index")
+                Log.d("opened verified standalone module settings from Bili settings")
                 return
             } catch (error: ActivityNotFoundException) {
-                Log.e("standalone module settings activity not found: strategy=$index", error)
+                Log.e("verified standalone module settings activity not found; using embedded settings", error)
             } catch (error: SecurityException) {
-                Log.e("standalone module settings activity denied: strategy=$index", error)
+                Log.e("verified standalone module settings activity denied; using embedded settings", error)
             }
         }
         EmbeddedSettingsDialog(activity, settings).show()
-        Log.d("opened embedded module settings after standalone strategies failed")
+        Log.d("opened embedded module settings: $signals")
     }
+
+    private fun hostApkVerifiedNotLspatch(activity: Activity): Boolean {
+        val sourceDir = activity.applicationInfo.sourceDir ?: return false
+        return runCatching {
+            ZipFile(sourceDir).use { apk ->
+                !containsLspatchMarker(apk.entries().asSequence().map { it.name })
+            }
+        }.onFailure { error ->
+            Log.e("failed to inspect host APK for LSPatch markers; keeping embedded settings", error)
+        }.getOrDefault(false)
+    }
+
+    private fun frameworkApiAvailable(): Boolean = runCatching {
+        XposedBridge.getXposedVersion() > 0
+    }.onFailure { error ->
+        Log.e("Xposed framework API unavailable; keeping embedded settings", error)
+    }.getOrDefault(false)
 
     private companion object {
         const val PREFERENCES_FRAGMENT_CLASS =
@@ -146,7 +162,7 @@ private class EmbeddedSettingsDialog(
             orientation = LinearLayout.VERTICAL
             setPadding(activity.dp(20), activity.dp(8), activity.dp(20), activity.dp(12))
         }
-        body.addView(info("内嵌设置会保存在当前 B 站客户端中。若系统允许当前客户端发现模块应用，将优先打开完整设置页。"))
+        body.addView(info("当前使用内嵌设置，配置会保存在此 B 站客户端中。仅在确认框架可用且独立模块已安装时，才会打开完整设置页。"))
         body.addView(section("基本功能"))
         addSwitch(body, SettingsContract.KEY_ENABLED, "启用模块功能", initial.enabled)
         addSwitch(body, SettingsContract.KEY_NOTIFY_FOUND, "发现片段时提示", initial.notifyFound)

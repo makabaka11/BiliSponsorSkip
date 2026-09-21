@@ -5,6 +5,7 @@ import android.app.Application
 import android.app.Instrumentation
 import android.os.Bundle
 import de.robv.android.xposed.IXposedHookLoadPackage
+import de.robv.android.xposed.IXposedHookZygoteInit
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
@@ -12,7 +13,12 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam
 import java.lang.reflect.Method
 import java.util.concurrent.atomic.AtomicBoolean
 
-class XposedInit : IXposedHookLoadPackage {
+class XposedInit : IXposedHookLoadPackage, IXposedHookZygoteInit {
+    override fun initZygote(startupParam: IXposedHookZygoteInit.StartupParam) {
+        loadedModulePath = startupParam.modulePath
+        Log.d("module loaded from ${startupParam.modulePath}")
+    }
+
     override fun handleLoadPackage(lpparam: LoadPackageParam) {
         if (lpparam.packageName !in TARGET_PACKAGES || lpparam.processName != lpparam.packageName) return
 
@@ -77,7 +83,7 @@ class XposedInit : IXposedHookLoadPackage {
         uiLifecycle: UiLifecycleRelay,
     ) {
         Log.d("initializing for ${lpparam.packageName} (${lpparam.appInfo.sourceDir})")
-        val settings = SettingsRepository(application)
+        val settings = SettingsRepository(application, loadedModulePath)
         val controller = SkipController(
             settings = settings,
             localStatsStore = LocalSkipStatsStore(application),
@@ -207,6 +213,9 @@ class XposedInit : IXposedHookLoadPackage {
     }
 
     private companion object {
+        @Volatile
+        var loadedModulePath: String? = null
+
         val TARGET_ACTIVITY_CLASSES = listOf(
             "com.bilibili.video.videodetail.VideoDetailsActivity",
         )
