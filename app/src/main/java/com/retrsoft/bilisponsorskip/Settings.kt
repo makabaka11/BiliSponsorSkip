@@ -18,6 +18,7 @@ internal data class SettingsSnapshot(
     val skipOnSeek: Boolean = true,
     val minDurationSeconds: Int = 0,
     val showSubmissionButton: Boolean = false,
+    val username: String = "",
     val userId: String = "",
     val categoryModes: Map<String, CategoryMode> = SettingsContract.DEFAULT_CATEGORY_MODES,
 )
@@ -39,7 +40,7 @@ internal fun SettingsSnapshot.categoryMode(category: String): CategoryMode =
 
 internal class SettingsRepository(
     private val application: Application,
-    private val loadedModulePath: String?,
+    val moduleApkPath: String?,
 ) {
     private val preferences = XSharedPreferences(MODULE_PACKAGE)
     private val mirrorPreferences = application.getSharedPreferences(MIRROR_PREFERENCES, Context.MODE_PRIVATE)
@@ -79,6 +80,7 @@ internal class SettingsRepository(
             .putBoolean(SettingsContract.KEY_SKIP_ON_SEEK, snapshot.skipOnSeek)
             .putString(SettingsContract.KEY_MIN_DURATION, snapshot.minDurationSeconds.toString())
             .putBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, snapshot.showSubmissionButton)
+            .putString(SettingsContract.KEY_USERNAME, snapshot.username)
             .putString(SettingsContract.KEY_USER_ID, snapshot.userId)
             .apply {
                 SettingsContract.CATEGORIES.forEach { category ->
@@ -137,7 +139,7 @@ internal class SettingsRepository(
                 )
                 .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES)
                 .putExtra(SettingsContract.EXTRA_TARGET_PACKAGE, application.packageName)
-                .putExtra(SettingsContract.EXTRA_LOADED_MODULE_PATH, loadedModulePath),
+                .putExtra(SettingsContract.EXTRA_LOADED_MODULE_PATH, moduleApkPath),
         )
     }
 
@@ -214,6 +216,7 @@ internal class SettingsRepository(
         minDurationSeconds = getString(SettingsContract.KEY_MIN_DURATION, "0")
             .toIntOrNull()?.coerceAtLeast(0) ?: 0,
         showSubmissionButton = getBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, false),
+        username = getString(SettingsContract.KEY_USERNAME, "").trim(),
         userId = getString(SettingsContract.KEY_USER_ID, "").trim(),
         categoryModes = SettingsContract.CATEGORIES.associateWith { category ->
             val default = SettingsContract.defaultCategoryMode(category)
@@ -332,6 +335,7 @@ internal object SettingsContract {
         putBoolean(KEY_SKIP_ON_SEEK, snapshot.skipOnSeek)
         putString(KEY_MIN_DURATION, snapshot.minDurationSeconds.toString())
         putBoolean(KEY_SHOW_SUBMISSION_BUTTON, snapshot.showSubmissionButton)
+        putString(KEY_USERNAME, snapshot.username)
         putString(KEY_USER_ID, snapshot.userId)
         CATEGORIES.forEach { category ->
             putString(categoryModeKey(category), snapshot.categoryMode(category).persistedValue)

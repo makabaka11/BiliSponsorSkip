@@ -70,6 +70,7 @@ class SettingsSyncReceiver : BroadcastReceiver() {
                 SettingsContract.KEY_SHOW_SUBMISSION_BUTTON,
                 defaults.showSubmissionButton,
             ),
+            username = preferences.getString(SettingsContract.KEY_USERNAME, defaults.username).orEmpty().trim(),
             userId = preferences.getString(SettingsContract.KEY_USER_ID, defaults.userId).orEmpty().trim(),
             categoryModes = SettingsContract.CATEGORIES.associateWith { category ->
                 val default = SettingsContract.defaultCategoryMode(category)
@@ -79,12 +80,7 @@ class SettingsSyncReceiver : BroadcastReceiver() {
                 )
             },
         )
-        val values = SettingsContract.settingsBundle(snapshot).apply {
-            putString(
-                SettingsContract.KEY_USERNAME,
-                preferences.getString(SettingsContract.KEY_USERNAME, "").orEmpty(),
-            )
-        }
+        val values = SettingsContract.settingsBundle(snapshot)
         context.sendBroadcast(
             Intent(SettingsContract.ACTION_UPDATE_SETTINGS)
                 .setPackage(targetPackage)
