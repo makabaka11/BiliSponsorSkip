@@ -66,6 +66,10 @@ class SettingsSyncReceiver : BroadcastReceiver() {
             skipOnSeek = preferences.getBoolean(SettingsContract.KEY_SKIP_ON_SEEK, defaults.skipOnSeek),
             minDurationSeconds = preferences.getString(SettingsContract.KEY_MIN_DURATION, "0")
                 ?.toIntOrNull()?.coerceAtLeast(0) ?: 0,
+            persistPlaybackSpeed = preferences.getBoolean(
+                SettingsContract.KEY_PERSIST_PLAYBACK_SPEED,
+                defaults.persistPlaybackSpeed,
+            ),
             showSubmissionButton = preferences.getBoolean(
                 SettingsContract.KEY_SHOW_SUBMISSION_BUTTON,
                 defaults.showSubmissionButton,

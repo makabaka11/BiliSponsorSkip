@@ -141,6 +141,14 @@ class SettingsActivity : AppCompatActivity() {
                 setDefaultValue("0")
             })
 
+            addPreference(category("定制功能"))
+            addPreference(toggle(
+                SettingsContract.KEY_PERSIST_PLAYBACK_SPEED,
+                "播放倍速持久化",
+                "记住视频中选择的倍速，并自动应用到后续视频及重启后的 B 站；首次启用后请重启 B 站",
+                false,
+            ))
+
             addPreference(category("片段提交与投票"))
             addPreference(toggle(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, "显示提交按钮",
                 "在视频播放器控制栏显示片段提交与投票入口", false))
@@ -555,6 +563,10 @@ class SettingsActivity : AppCompatActivity() {
             putBoolean(SettingsContract.KEY_SHOW_PROGRESS_MARKERS, preferences.getBoolean(SettingsContract.KEY_SHOW_PROGRESS_MARKERS, true))
             putBoolean(SettingsContract.KEY_SKIP_ON_SEEK, preferences.getBoolean(SettingsContract.KEY_SKIP_ON_SEEK, true))
             putString(SettingsContract.KEY_MIN_DURATION, preferences.getString(SettingsContract.KEY_MIN_DURATION, "0"))
+            putBoolean(
+                SettingsContract.KEY_PERSIST_PLAYBACK_SPEED,
+                preferences.getBoolean(SettingsContract.KEY_PERSIST_PLAYBACK_SPEED, false),
+            )
             putBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, preferences.getBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, false))
             putString(SettingsContract.KEY_USER_ID, preferences.getString(SettingsContract.KEY_USER_ID, ""))
             putString(SettingsContract.KEY_USERNAME, preferences.getString(SettingsContract.KEY_USERNAME, ""))

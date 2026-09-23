@@ -88,6 +88,7 @@ class XposedInit : IXposedHookLoadPackage, IXposedHookZygoteInit {
             settings = settings,
             localStatsStore = LocalSkipStatsStore(application),
         )
+        val playbackSpeedPersistence = PlaybackSpeedPersistence(application, settings)
         val playerNotice = BiliPlayerNoticeBridge(
             apkPath = lpparam.appInfo.sourceDir,
             packageName = lpparam.packageName,
@@ -118,6 +119,7 @@ class XposedInit : IXposedHookLoadPackage, IXposedHookZygoteInit {
                     lpparam.appInfo.sourceDir,
                     lpparam.classLoader,
                     controller,
+                    playbackSpeedPersistence,
                     ensureDexKitLoaded = { DexKitNativeLoader.ensureLoaded(application) },
                 ).install()
             }.onFailure {

@@ -17,6 +17,7 @@ internal class PlayerHook(
     private val apkPath: String,
     private val classLoader: ClassLoader,
     private val controller: SkipController,
+    private val playbackSpeedPersistence: PlaybackSpeedPersistence,
     private val ensureDexKitLoaded: () -> Unit,
 ) {
     private data class Resolution(
@@ -24,6 +25,7 @@ internal class PlayerHook(
         val positionMethods: List<Method>,
         val durationMethods: List<Method>,
         val stateMethods: List<Method>,
+        val playbackSpeedMethod: Method? = null,
     )
 
     private data class PollTarget(
@@ -39,18 +41,33 @@ internal class PlayerHook(
 
     fun install() {
         val knownResolution = resolveKnown940PlayerMethods()
-        val resolution = knownResolution ?: run {
-            ensureDexKitLoaded()
-            DexKitBridge.create(apkPath).use { bridge ->
-                if (!Process.is64Bit()) {
-                    bridge.setThreadNum(2)
-                    bridge.setMaxConcurrentQueries(1)
-                    Log.d("DexKit constrained for 32-bit process: threads=2; concurrentQueries=1")
-                }
-                resolvePlayerMethods(bridge)
-            }
+        if (knownResolution != null && !playbackSpeedPersistence.isEnabled()) {
+            installResolution(knownResolution)
+            return
+        }
+
+        ensureDexKitLoaded()
+        val resolution = DexKitBridge.create(apkPath).use { bridge ->
+            configureBridge(bridge)
+            knownResolution?.let { known ->
+                known.copy(
+                    playbackSpeedMethod = runCatching {
+                        findPlaybackSpeedMethod(bridge, known.seekMethod.declaringClass)
+                    }.onFailure { error ->
+                        Log.e("playback speed method discovery unavailable for known player", error)
+                    }.getOrNull(),
+                )
+            } ?: resolvePlayerMethods(bridge)
         }
         installResolution(resolution)
+    }
+
+    private fun configureBridge(bridge: DexKitBridge) {
+        if (!Process.is64Bit()) {
+            bridge.setThreadNum(2)
+            bridge.setMaxConcurrentQueries(1)
+            Log.d("DexKit constrained for 32-bit process: threads=2; concurrentQueries=1")
+        }
     }
 
     private fun installResolution(resolution: Resolution) {
@@ -58,13 +75,29 @@ internal class PlayerHook(
         val positionMethods = resolution.positionMethods
         val durationMethods = resolution.durationMethods
         val stateMethods = resolution.stateMethods
+        val playbackSpeedMethod = resolution.playbackSpeedMethod
         val playerClass = seekMethod.declaringClass
+
+        playbackSpeedMethod?.let { setter ->
+            XposedBridge.hookMethod(setter, object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) {
+                    val speed = (param.args.firstOrNull() as? Number)?.toFloat() ?: return
+                    playbackSpeedPersistence.onSpeedSet(param.thisObject, speed)
+                }
+            })
+        }
 
         positionMethods.forEach { positionMethod ->
             XposedBridge.hookMethod(positionMethod, object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     val position = (param.result as? Number)?.toInt() ?: return
-                    bindAndPoll(param.thisObject, seekMethod, positionMethod, durationMethods.firstOrNull())
+                    bindAndPoll(
+                        param.thisObject,
+                        seekMethod,
+                        positionMethod,
+                        durationMethods.firstOrNull(),
+                        playbackSpeedMethod,
+                    )
                     if (firstPositionLogged.compareAndSet(false, true)) {
                         Log.d("first player position received: $position ms")
                     }
@@ -81,6 +114,7 @@ internal class PlayerHook(
                         seekMethod,
                         positionMethods.first(),
                         durationMethods.firstOrNull(),
+                        playbackSpeedMethod,
                     )
                 }
             })
@@ -94,6 +128,7 @@ internal class PlayerHook(
                         seekMethod,
                         positionMethods.first(),
                         durationMethods.firstOrNull(),
+                        playbackSpeedMethod,
                     )
                 }
             })
@@ -102,7 +137,8 @@ internal class PlayerHook(
             "player resolved: ${playerClass.name}; seek=${seekMethod.name}${seekMethod.parameterTypes.contentToString()}; " +
                 "position=${positionMethods.joinToString { "${it.declaringClass.simpleName}.${it.name}" }}; " +
                 "duration=${durationMethods.joinToString { "${it.declaringClass.simpleName}.${it.name}" }.ifEmpty { "none" }}; " +
-                "state=${stateMethods.joinToString { it.name }.ifEmpty { "none" }}",
+                "state=${stateMethods.joinToString { it.name }.ifEmpty { "none" }}; " +
+                "speed=${playbackSpeedMethod?.name ?: "unsupported"}",
         )
         controller.onPlayerHookInstalled(
             "${playerClass.name}; seek=${seekMethod.name}; state=" +
@@ -130,7 +166,7 @@ internal class PlayerHook(
                 !Modifier.isStatic(method.modifiers) &&
                 method.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType!!))
         }
-        Log.d("using known 9.4.0 player resolution without DexKit: ${playerClass.name}")
+        Log.d("using known 9.4.0 base player resolution: ${playerClass.name}")
         return Resolution(
             seekMethod,
             positionMethods,
@@ -169,11 +205,15 @@ internal class PlayerHook(
                 diagnostics += "${data.descriptor}: no concrete getCurrentPosition()"
                 null
             } else {
+                val playerClass = method.declaringClass
                 Resolution(
                     method,
                     positions,
-                    findDurationMethods(method.declaringClass),
-                    findStateMethods(bridge, method.declaringClass),
+                    findDurationMethods(playerClass),
+                    findStateMethods(bridge, playerClass),
+                    runCatching { findPlaybackSpeedMethod(bridge, playerClass) }
+                        .onFailure { Log.e("playback speed method discovery failed", it) }
+                        .getOrNull(),
                 )
             }
         }
@@ -230,13 +270,43 @@ internal class PlayerHook(
             runCatching { data.getMethodInstance(classLoader) }.getOrNull()
         }
 
+    private fun findPlaybackSpeedMethod(bridge: DexKitBridge, playerClass: Class<*>): Method? {
+        val matches = bridge.findMethod {
+            matcher {
+                declaredClass = playerClass.name
+                returnType = "void"
+                paramTypes = listOf("float")
+                usingStrings("[player] player speed type=")
+            }
+        }.mapNotNull { data ->
+            runCatching { data.getMethodInstance(classLoader) }.getOrNull()
+        }.filter { method ->
+            !Modifier.isStatic(method.modifiers) &&
+                method.returnType == Void.TYPE &&
+                method.parameterTypes.contentEquals(arrayOf(Float::class.javaPrimitiveType!!))
+        }.distinctBy { method -> method.toGenericString() }
+
+        if (matches.size != 1) {
+            Log.e(
+                "playback speed method unsupported: player=${playerClass.name}; " +
+                    "matches=${matches.joinToString { it.toGenericString() }.ifEmpty { "none" }}",
+            )
+            return null
+        }
+        return matches.single().also { method ->
+            Log.d("playback speed method resolved: ${method.declaringClass.name}.${method.name}(float)")
+        }
+    }
+
     private fun bindAndPoll(
         player: Any,
         seekMethod: Method,
         positionMethod: Method,
         durationMethod: Method?,
+        playbackSpeedMethod: Method?,
     ) {
         controller.bindPlayer(player, seekMethod)
+        playbackSpeedMethod?.let { playbackSpeedPersistence.applyToPlayer(player, it) }
         pollTarget.set(PollTarget(WeakReference(player), positionMethod, durationMethod))
         if (pollStarted.compareAndSet(false, true)) mainHandler.post(pollRunnable)
     }

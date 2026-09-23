@@ -17,6 +17,7 @@ internal data class SettingsSnapshot(
     val showProgressMarkers: Boolean = true,
     val skipOnSeek: Boolean = true,
     val minDurationSeconds: Int = 0,
+    val persistPlaybackSpeed: Boolean = false,
     val showSubmissionButton: Boolean = false,
     val username: String = "",
     val userId: String = "",
@@ -79,6 +80,7 @@ internal class SettingsRepository(
             .putBoolean(SettingsContract.KEY_SHOW_PROGRESS_MARKERS, snapshot.showProgressMarkers)
             .putBoolean(SettingsContract.KEY_SKIP_ON_SEEK, snapshot.skipOnSeek)
             .putString(SettingsContract.KEY_MIN_DURATION, snapshot.minDurationSeconds.toString())
+            .putBoolean(SettingsContract.KEY_PERSIST_PLAYBACK_SPEED, snapshot.persistPlaybackSpeed)
             .putBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, snapshot.showSubmissionButton)
             .putString(SettingsContract.KEY_USERNAME, snapshot.username)
             .putString(SettingsContract.KEY_USER_ID, snapshot.userId)
@@ -215,6 +217,7 @@ internal class SettingsRepository(
         skipOnSeek = getBoolean(SettingsContract.KEY_SKIP_ON_SEEK, true),
         minDurationSeconds = getString(SettingsContract.KEY_MIN_DURATION, "0")
             .toIntOrNull()?.coerceAtLeast(0) ?: 0,
+        persistPlaybackSpeed = getBoolean(SettingsContract.KEY_PERSIST_PLAYBACK_SPEED, false),
         showSubmissionButton = getBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, false),
         username = getString(SettingsContract.KEY_USERNAME, "").trim(),
         userId = getString(SettingsContract.KEY_USER_ID, "").trim(),
@@ -259,6 +262,7 @@ internal object SettingsContract {
     const val KEY_SHOW_PROGRESS_MARKERS = "show_progress_markers"
     const val KEY_SKIP_ON_SEEK = "skip_on_seek"
     const val KEY_MIN_DURATION = "min_duration"
+    const val KEY_PERSIST_PLAYBACK_SPEED = "persist_playback_speed"
     const val KEY_SHOW_SUBMISSION_BUTTON = "show_submission_button"
     const val KEY_USER_ID = "user_id"
     const val KEY_USERNAME = "username"
@@ -334,6 +338,7 @@ internal object SettingsContract {
         putBoolean(KEY_SHOW_PROGRESS_MARKERS, snapshot.showProgressMarkers)
         putBoolean(KEY_SKIP_ON_SEEK, snapshot.skipOnSeek)
         putString(KEY_MIN_DURATION, snapshot.minDurationSeconds.toString())
+        putBoolean(KEY_PERSIST_PLAYBACK_SPEED, snapshot.persistPlaybackSpeed)
         putBoolean(KEY_SHOW_SUBMISSION_BUTTON, snapshot.showSubmissionButton)
         putString(KEY_USERNAME, snapshot.username)
         putString(KEY_USER_ID, snapshot.userId)
@@ -350,6 +355,7 @@ internal object SettingsContract {
         KEY_SHOW_TITLE_LABEL,
         KEY_SHOW_PROGRESS_MARKERS,
         KEY_SKIP_ON_SEEK,
+        KEY_PERSIST_PLAYBACK_SPEED,
         KEY_SHOW_SUBMISSION_BUTTON,
     )
 

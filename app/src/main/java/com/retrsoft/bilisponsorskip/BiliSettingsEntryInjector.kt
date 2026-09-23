@@ -197,6 +197,15 @@ private class EmbeddedSettingsDialog(
         }
         body.addView(spinnerRow("最短片段时长", "更短的片段不会提示或跳过", minimumDurationSpinner))
 
+        body.addView(section("定制功能"))
+        addSwitch(
+            body,
+            SettingsContract.KEY_PERSIST_PLAYBACK_SPEED,
+            "播放倍速持久化",
+            "记住视频中选择的倍速，并自动应用到后续视频及重启后的 B 站；首次启用后请重启 B 站",
+            initial.persistPlaybackSpeed,
+        )
+
         body.addView(section("片段提交与投票"))
         addSwitch(
             body,
@@ -311,6 +320,7 @@ private class EmbeddedSettingsDialog(
                 minDurationSeconds = MINIMUM_DURATION_VALUES[
                     minimumDurationSpinner.selectedItemPosition.coerceIn(MINIMUM_DURATION_VALUES.indices)
                 ],
+                persistPlaybackSpeed = switch(SettingsContract.KEY_PERSIST_PLAYBACK_SPEED),
                 showSubmissionButton = switch(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON),
                 username = username,
                 userId = userId,
