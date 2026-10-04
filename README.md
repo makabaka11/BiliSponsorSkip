@@ -9,7 +9,7 @@
 
 <br>
 
-![GitHub release](https://img.shields.io/github/v/release/aimessoft/?style=flat-square&color=blue)
+![GitHub release](https://img.shields.io/github/v/release/makabaka11/BiliSponsorSkip?style=flat-square&color=blue)
 ![GitHub downloads](https://img.shields.io/github/downloads/makabaka11/BiliSponsorSkip/total?style=flat-square&color=green)
 ![License](https://img.shields.io/github/license/makabaka11/BiliSponsorSkip?style=flat-square)
 
