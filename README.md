@@ -4,6 +4,13 @@
 
 <h1 align="center">BiliSponsorSkip</h1>
 
+
+<img src="https://count.getloli.com/get/@bilisponsorskip?theme=moebooru" alt="访问统计" />
+
+![GitHub release](https://img.shields.io/github/v/release/makabaka11/BiliSponsorSkip?style=flat-square&color=blue)
+![GitHub downloads](https://img.shields.io/github/downloads/makabaka11/BiliSponsorSkip/total?style=flat-square&color=green)
+![License](https://img.shields.io/github/license/makabaka11/BiliSponsorSkip?style=flat-square)
+
 <p align="center">在 Android 版哔哩哔哩中提示并自动跳过社区标记的特殊片段。</p>
 
 > [!IMPORTANT]
