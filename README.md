@@ -9,7 +9,8 @@
 </div>
 
 ![GitHub release](https://img.shields.io/github/v/release/makabaka11/BiliSponsorSkip?style=flat-square&color=blue)
-![GitHub downloads](https://img.shields.io/github/downloads/makabaka11/BiliSponsorSkip/total?style=flat-square&color=green)
+![main repo downloads](https://img.shields.io/github/downloads/makabaka11/BiliSponsorSkip/total?style=flat-square&color=green&label=Github%20Repo%20Downloads)
+![Xposed repo downloads](https://img.shields.io/github/downloads/Xposed-Modules-Repo/io.github.makabaka11.bilisponsorskip/total?style=flat-square&color=yellow&label=Xposed%20Repo%20Downloads)
 ![License](https://img.shields.io/github/license/makabaka11/BiliSponsorSkip?style=flat-square)
 
 > [!IMPORTANT]
