@@ -8,10 +8,16 @@
 <img src="https://count.getloli.com/get/@bilisponsorskip?theme=moebooru" alt="访问统计" />
 </div>
 
-![GitHub release](https://img.shields.io/github/v/release/makabaka11/BiliSponsorSkip?style=flat-square&color=blue)
-![main repo downloads](https://img.shields.io/github/downloads/makabaka11/BiliSponsorSkip/total?style=flat-square&color=green&label=Github%20Repo%20Downloads)
-![Xposed repo downloads](https://img.shields.io/github/downloads/Xposed-Modules-Repo/io.github.makabaka11.bilisponsorskip/total?style=flat-square&color=yellow&label=Xposed%20Repo%20Downloads)
-![License](https://img.shields.io/github/license/makabaka11/BiliSponsorSkip?style=flat-square)
+<div align="center">
+<img alt="GitHub release" src="https://img.shields.io/github/v/release/makabaka11/BiliSponsorSkip?style=flat-square&color=blue">
+&nbsp;
+<img alt="main repo downloads" src="https://img.shields.io/github/downloads/makabaka11/BiliSponsorSkip/total?style=flat-square&color=green&label=Github%20Repo%20Downloads">
+&nbsp;
+<img alt="Xposed repo downloads" src="https://img.shields.io/github/downloads/Xposed-Modules-Repo/io.github.makabaka11.bilisponsorskip/total?style=flat-square&color=yellow&label=Xposed%20Repo%20Downloads">
+&nbsp;
+<img alt="License" src="https://img.shields.io/github/license/makabaka11/BiliSponsorSkip?style=flat-square">
+</div>
+
 
 > [!IMPORTANT]
 > 本项目基于 Xposed/LSPosed Hook 技术实现，目标应用更新可能导致 Hook 点变化，从而出现功能异常或无法加载。
