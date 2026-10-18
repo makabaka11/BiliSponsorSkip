@@ -47,6 +47,7 @@ internal class SkipController(
     private val reportedSettings = ConcurrentHashMap.newKeySet<String>()
     private val uiStateListeners = CopyOnWriteArraySet<() -> Unit>()
     private val uiNotificationScheduled = AtomicBoolean(false)
+    private val skipGuard = SegmentSkipGuard()
 
     @Volatile
     private var playerHookReady = false
@@ -113,6 +114,7 @@ internal class SkipController(
             lastCheckAt = 0L
             lastCheckedPositionMs = null
             suppressUntil = 0L
+            skipGuard.clear()
             clearManualSkipNotice()
             Log.d("video changed: ${next.bvid}+${next.cid}")
             notifyUiStateChanged()
@@ -125,6 +127,23 @@ internal class SkipController(
         playerRef = WeakReference(player)
         seekMethod = fallbackSeekMethod
     }
+
+    fun clearVideo(reason: String) {
+        val previous = activeVideo.getAndSet(null) ?: return
+        durationMs = 0
+        currentPositionMs = 0
+        lastCheckAt = 0L
+        lastCheckedPositionMs = null
+        suppressUntil = 0L
+        skipGuard.clear()
+        clearManualSkipNotice()
+        Log.d("video cleared: ${previous.bvid}+${previous.cid}; reason=$reason")
+        notifyUiStateChanged()
+    }
+
+    fun currentVideo(): VideoKey? = activeVideo.get()
+
+    fun categoryColor(category: String, preview: Boolean): Int = settings.current.categoryColor(category, preview)
 
     fun bindPlayerNotice(notice: InteractivePlayerNotice) {
         playerNotice = notice
@@ -267,6 +286,7 @@ internal class SkipController(
     fun onPosition(positionMs: Int) {
         if (positionMs < 0) return
         currentPositionMs = positionMs
+        skipGuard.observe(positionMs)
         val now = System.currentTimeMillis()
         lastPositionAt = now
         if (now < suppressUntil || now - lastCheckAt < CHECK_INTERVAL_MS) return
@@ -332,6 +352,9 @@ internal class SkipController(
             return
         }
 
+        if (!skipGuard.tryAcquire(segment.uuid, segment.startMs, segment.endMs)) return
+        // Set the cooldown before invoking the player: seek may synchronously report progress.
+        suppressUntil = now + SEEK_COOLDOWN_MS
         if (seek(player, segment.endMs, segment)) {
             suppressUntil = now + SEEK_COOLDOWN_MS
             Log.d("skipped ${segment.startMs}..${segment.endMs} (${segment.uuid})")
@@ -381,6 +404,8 @@ internal class SkipController(
                 return@post
             }
             val position = currentPositionMs
+            if (!skipGuard.tryAcquire(segment.uuid, segment.startMs, segment.endMs)) return@post
+            suppressUntil = System.currentTimeMillis() + SEEK_COOLDOWN_MS
             if (seek(player, segment.endMs, segment)) {
                 suppressUntil = System.currentTimeMillis() + SEEK_COOLDOWN_MS
                 recordLocalSkip((segment.endMs - position).coerceAtLeast(0))

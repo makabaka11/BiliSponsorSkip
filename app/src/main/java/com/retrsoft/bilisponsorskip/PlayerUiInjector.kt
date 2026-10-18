@@ -38,6 +38,7 @@ internal class PlayerUiInjector(
         val inlineSpan: TitleLabelSpan?,
         val video: SkipController.VideoKey,
         val label: String,
+        val color: Int,
     )
 
     private data class MarkerState(
@@ -92,15 +93,9 @@ internal class PlayerUiInjector(
                 val title = param.thisObject as? TextView ?: return
                 if (!isDetailTitleStructure(title)) return
                 val text = param.args[0] as? CharSequence ?: return
-                val snapshot = controller.uiSnapshot()
-                if (!snapshot.showTitleLabel || snapshot.segments.isEmpty()) {
-                    param.args[0] = stripInlineTitleLabels(text)
-                    return
-                }
-                val categories = snapshot.segments.map { it.category }.distinct()
-                val label = categories.first().categoryLabel() +
-                    if (categories.size > 1) " +${categories.size - 1}" else ""
-                param.args[0] = decorateInlineText(title, text, label, categories.first())
+                // The host may be rebinding this view to another video. Only render() may
+                // decorate, so every span has tracked ownership and can be removed on exit.
+                param.args[0] = stripInlineTitleLabels(text)
             }
 
             override fun afterHookedMethod(param: MethodHookParam) {
@@ -135,6 +130,15 @@ internal class PlayerUiInjector(
 
     private fun renderTitleLabel(activity: Activity, snapshot: SkipController.UiSnapshot) {
         val video = snapshot.video ?: return
+        // Title badges describe promotion, rather than every skippable segment type.
+        // Keep sponsor first regardless of the segments' chronological order.
+        val categories = listOf("sponsor", "selfpromo").filter { category ->
+            snapshot.segments.any { it.category == category }
+        }
+        if (categories.isEmpty()) {
+            clearTitleLabels()
+            return
+        }
         if (cachedTitleVideo != video) {
             cachedTitleVideo = video
             cachedVideoTitle = null
@@ -178,7 +182,6 @@ internal class PlayerUiInjector(
         }
 
         restoreTitleLabelsExcept(titleTargets)
-        val categories = snapshot.segments.map { it.category }.distinct()
         val label = categories.first().categoryLabel() + if (categories.size > 1) " +${categories.size - 1}" else ""
         titleTargets.forEach { title ->
             decorateTitle(
@@ -203,14 +206,16 @@ internal class PlayerUiInjector(
         activity: Activity,
     ) {
         val existingState = titleStates[title]
+        val color = categoryColor(category, preview = true)
         val useInlineSpan = isDetailTitle && !isKnownPlayerTitle
         if (
             existingState?.video == video &&
             existingState?.label == label &&
+            existingState.color == color &&
             isTitleStateApplied(title, existingState)
         ) return
 
-        if (existingState?.video == video && existingState.label == label) {
+        if (existingState?.video == video && existingState.label == label && existingState.color == color) {
             if (useInlineSpan) {
                 restoreTitle(title)
                 applyInlineTitleLabel(title, video, label, category)
@@ -260,7 +265,12 @@ internal class PlayerUiInjector(
         category: String,
     ) {
         val originalText = stripInlineTitleLabels(title.text)
-        title.text = decorateInlineText(title, originalText, label, category)
+        suppressExpandableTitleHook = true
+        try {
+            title.text = decorateInlineText(title, originalText, label, category)
+        } finally {
+            suppressExpandableTitleHook = false
+        }
         val appliedText = title.text as? Spanned
         val appliedSpan = appliedText
             ?.getSpans(0, appliedText.length, TitleLabelSpan::class.java)
@@ -274,6 +284,7 @@ internal class PlayerUiInjector(
             inlineSpan = appliedSpan,
             video = video,
             label = label,
+            color = categoryColor(category, preview = true),
         )
     }
 
@@ -307,6 +318,7 @@ internal class PlayerUiInjector(
             inlineSpan = null,
             video = video,
             label = label,
+            color = categoryColor(category, preview = true),
         )
     }
 
@@ -507,7 +519,7 @@ internal class PlayerUiInjector(
     }
 
     private fun attachMarkerDrawable(view: View): MarkerState {
-        val drawable = SegmentMarkerDrawable(view)
+        val drawable = SegmentMarkerDrawable(view) { categoryColor(it, preview = false) }
         val layoutListener = View.OnLayoutChangeListener { changed, _, _, _, _, _, _, _, _ ->
             drawable.bounds = android.graphics.Rect(0, 0, changed.width, changed.height)
             drawable.invalidateSelf()
@@ -636,6 +648,8 @@ internal class PlayerUiInjector(
         if (resumedActivity?.get() === activity) {
             resumedActivity = null
             stopObservingLayout()
+            clearTitleLabels()
+            clearProgressMarkers()
         }
     }
 
@@ -643,6 +657,8 @@ internal class PlayerUiInjector(
         if (resumedActivity?.get() === activity) {
             resumedActivity = null
             stopObservingLayout()
+            clearTitleLabels()
+            clearProgressMarkers()
         }
     }
 
@@ -782,7 +798,7 @@ internal class PlayerUiInjector(
         override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
     }
 
-    private class SegmentMarkerDrawable(private val host: View) : Drawable() {
+    private class SegmentMarkerDrawable(private val host: View, private val colorForCategory: (String) -> Int) : Drawable() {
         private data class Marker(val start: Float, val end: Float, val color: Int)
 
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -797,7 +813,7 @@ internal class PlayerUiInjector(
                     Marker(
                         start = (segment.startMs.toFloat() / durationMs).coerceIn(0f, 1f),
                         end = (segment.endMs.toFloat() / durationMs).coerceIn(0f, 1f),
-                        color = categoryColor(segment.category, preview = false),
+                        color = colorForCategory(segment.category),
                     )
                 }
             if (markers == updatedMarkers) return
@@ -864,6 +880,8 @@ internal class PlayerUiInjector(
         override fun getOpacity(): Int = android.graphics.PixelFormat.TRANSLUCENT
     }
 
+    private fun categoryColor(category: String, preview: Boolean): Int = controller.categoryColor(category, preview)
+
     private companion object {
         const val INLINE_LABEL_PLACEHOLDER = "\uFFFC"
         const val EXPANDABLE_TITLE_CLASS =
@@ -921,26 +939,8 @@ internal class PlayerUiInjector(
         const val PROGRESS_DIAGNOSTIC_MAX_HEIGHT_DP = 24f
         const val PROGRESS_DIAGNOSTIC_BOTTOM_SLOP_DP = 8f
 
-        fun categoryColor(category: String, preview: Boolean): Int = Color.parseColor(
-            when (category) {
-                "sponsor" -> if (preview) "#007800" else "#00d400"
-                "selfpromo" -> if (preview) "#bfbf35" else "#ffff00"
-                "interaction" -> if (preview) "#6c0087" else "#cc00ff"
-                "intro" -> if (preview) "#008080" else "#00ffff"
-                "outro" -> if (preview) "#000070" else "#0202ed"
-                "preview" -> if (preview) "#005799" else "#008fd6"
-                "music_offtopic" -> if (preview) "#a6634a" else "#ff9900"
-                "filler" -> if (preview) "#2e0066" else "#7300ff"
-                "padding" -> if (preview) "#111111" else "#222222"
-                else -> if (preview) "#555555" else "#999999"
-            },
-        )
-
         fun contrastingTextColor(background: Int): Int {
-            val luminance = 0.2126 * Color.red(background) +
-                0.7152 * Color.green(background) +
-                0.0722 * Color.blue(background)
-            return if (luminance > 150) Color.BLACK else Color.WHITE
+            return CategoryColors.foreground(background)
         }
     }
 }

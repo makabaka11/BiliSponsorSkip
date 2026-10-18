@@ -169,7 +169,8 @@ private class EmbeddedSettingsDialog(
     private val initial = settings.refresh()
     private val colors = embeddedSettingsColors(isDarkDialogTheme(activity))
     private val switches = linkedMapOf<String, Switch>()
-    private val categorySpinners = linkedMapOf<String, Spinner>()
+    private val categoryModes = initial.categoryModes.toMutableMap()
+    private val categoryColors = initial.categoryColors.toMutableMap()
     private lateinit var minimumDurationSpinner: Spinner
     private lateinit var usernameInput: EditText
     private lateinit var userIdInput: EditText
@@ -244,11 +245,23 @@ private class EmbeddedSettingsDialog(
         body.addView(section("片段分类行为"))
         body.addView(info("默认行为与原版浏览器插件一致；“手动跳过”会在进入片段时提供跳过按钮。"))
         SettingsContract.CATEGORIES.forEach { category ->
-            val spinner = spinner(CATEGORY_MODE_LABELS).apply {
-                setSelection(CATEGORY_MODES.indexOf(initial.categoryMode(category)).coerceAtLeast(0))
+            val row = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+            fun renderRow() {
+                row.removeAllViews()
+                val mode = categoryModes[category] ?: SettingsContract.defaultCategoryMode(category)
+                val custom = categoryColors[category]
+                row.addView(actionRow(category.categoryLabel(),
+                    "${CATEGORY_BEHAVIOR_LABELS[mode.ordinal]} · ${custom ?: "默认颜色"}；${categorySummary(category)}") {
+                    showEmbeddedCategorySettings(activity, category, mode, custom,
+                        ColorDialogTheme(colors.surface, colors.primaryText, colors.secondaryText, colors.accent)) { value, color ->
+                        categoryModes[category] = value
+                        if (color == null) categoryColors.remove(category) else categoryColors[category] = color
+                        renderRow()
+                    }
+                })
             }
-            categorySpinners[category] = spinner
-            body.addView(spinnerRow(category.categoryLabel(), categorySummary(category), spinner))
+            renderRow()
+            body.addView(row)
         }
 
         body.addView(section("使用说明"))
@@ -296,10 +309,6 @@ private class EmbeddedSettingsDialog(
             Identity.isValid(initial.userId) -> initial.userId
             else -> Identity.generate()
         }
-        val modes = SettingsContract.CATEGORIES.associateWith { category ->
-            val spinner = requireNotNull(categorySpinners[category])
-            CATEGORY_MODES[spinner.selectedItemPosition.coerceIn(CATEGORY_MODES.indices)]
-        }
         val saved = initial.copy(
                 enabled = switch(SettingsContract.KEY_ENABLED),
                 notifyFound = switch(SettingsContract.KEY_NOTIFY_FOUND),
@@ -314,7 +323,8 @@ private class EmbeddedSettingsDialog(
                 showSubmissionButton = switch(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON),
                 username = username,
                 userId = userId,
-                categoryModes = modes,
+                categoryModes = categoryModes.toMap(),
+                categoryColors = categoryColors.toMap(),
         )
         settings.updateFromEmbeddedSettings(saved)
         if (username != initial.username) updateUsername(saved, initial.username)

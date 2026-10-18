@@ -21,6 +21,7 @@ internal data class SettingsSnapshot(
     val username: String = "",
     val userId: String = "",
     val categoryModes: Map<String, CategoryMode> = SettingsContract.DEFAULT_CATEGORY_MODES,
+    val categoryColors: Map<String, String> = emptyMap(),
 )
 
 internal enum class CategoryMode(val persistedValue: String) {
@@ -84,6 +85,7 @@ internal class SettingsRepository(
             .putString(SettingsContract.KEY_USER_ID, snapshot.userId)
             .apply {
                 SettingsContract.CATEGORIES.forEach { category ->
+                    putString(SettingsContract.categoryColorKey(category), snapshot.categoryColors[category].orEmpty())
                     putString(
                         SettingsContract.categoryModeKey(category),
                         snapshot.categoryMode(category).persistedValue,
@@ -218,6 +220,10 @@ internal class SettingsRepository(
         showSubmissionButton = getBoolean(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, false),
         username = getString(SettingsContract.KEY_USERNAME, "").trim(),
         userId = getString(SettingsContract.KEY_USER_ID, "").trim(),
+        categoryColors = SettingsContract.CATEGORIES.mapNotNull { category ->
+            CategoryColors.normalize(getString(SettingsContract.categoryColorKey(category), ""))
+                ?.let { category to it }
+        }.toMap(),
         categoryModes = SettingsContract.CATEGORIES.associateWith { category ->
             val default = SettingsContract.defaultCategoryMode(category)
             when {
@@ -316,6 +322,7 @@ internal object SettingsContract {
     fun categoryKey(category: String) = "category_$category"
 
     fun categoryModeKey(category: String) = "category_mode_$category"
+    fun categoryColorKey(category: String) = "category_color_$category"
 
     fun defaultCategoryMode(category: String) = DEFAULT_CATEGORY_MODES[category] ?: CategoryMode.DISABLED
 
@@ -338,6 +345,7 @@ internal object SettingsContract {
         putString(KEY_USERNAME, snapshot.username)
         putString(KEY_USER_ID, snapshot.userId)
         CATEGORIES.forEach { category ->
+            putString(categoryColorKey(category), CategoryColors.normalize(snapshot.categoryColors[category]).orEmpty())
             putString(categoryModeKey(category), snapshot.categoryMode(category).persistedValue)
         }
     }
@@ -354,7 +362,8 @@ internal object SettingsContract {
     )
 
     val STRING_SETTING_KEYS: List<String>
-        get() = listOf(KEY_MIN_DURATION, KEY_USER_ID, KEY_USERNAME) + CATEGORIES.map(::categoryModeKey)
+        get() = listOf(KEY_MIN_DURATION, KEY_USER_ID, KEY_USERNAME) +
+            CATEGORIES.map(::categoryModeKey) + CATEGORIES.map(::categoryColorKey)
 
     fun sourceStatsKey(source: String, value: String) = "$KEY_LOCAL_STATS_SOURCE_PREFIX${source}_$value"
 }

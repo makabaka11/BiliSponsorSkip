@@ -72,6 +72,10 @@ class SettingsSyncReceiver : BroadcastReceiver() {
             ),
             username = preferences.getString(SettingsContract.KEY_USERNAME, defaults.username).orEmpty().trim(),
             userId = preferences.getString(SettingsContract.KEY_USER_ID, defaults.userId).orEmpty().trim(),
+            categoryColors = SettingsContract.CATEGORIES.mapNotNull { category ->
+                CategoryColors.normalize(preferences.getString(SettingsContract.categoryColorKey(category), ""))
+                    ?.let { category to it }
+            }.toMap(),
             categoryModes = SettingsContract.CATEGORIES.associateWith { category ->
                 val default = SettingsContract.defaultCategoryMode(category)
                 CategoryMode.fromPersisted(

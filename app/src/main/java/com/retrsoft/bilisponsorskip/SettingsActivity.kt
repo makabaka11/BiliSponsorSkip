@@ -50,6 +50,9 @@ class SettingsActivity : AppCompatActivity() {
                 if (key == SettingsContract.KEY_USER_ID) {
                     settingsFragment()?.refreshUserId()
                 }
+                if (key?.startsWith("category_color_") == true || key?.startsWith("category_mode_") == true) {
+                    settingsFragment()?.refreshCategorySummaries()
+                }
             }
         }
     }
@@ -111,6 +114,17 @@ class SettingsActivity : AppCompatActivity() {
             refreshLocalStats()
             loadRemoteStats()
             checkForUpdates()
+        }
+
+        fun refreshCategorySummaries() {
+            val prefs = host.modulePreferences()
+            SettingsContract.CATEGORIES.forEach { category ->
+                val mode = CategoryMode.fromPersisted(prefs.getString(SettingsContract.categoryModeKey(category), null),
+                    SettingsContract.defaultCategoryMode(category))
+                val custom = CategoryColors.normalize(prefs.getString(SettingsContract.categoryColorKey(category), ""))
+                findPreference<Preference>(SettingsContract.categoryModeKey(category))?.summary =
+                    "${CATEGORY_BEHAVIOR_LABELS[mode.ordinal]} · ${custom ?: "默认颜色"}；${host.categorySummary(category)}"
+            }
         }
 
         override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -207,15 +221,29 @@ class SettingsActivity : AppCompatActivity() {
             addPreference(category("片段分类行为"))
             addPreference(info("默认行为与原版浏览器插件一致；“手动跳过”会在进入片段时提供跳过按钮。"))
             SettingsContract.CATEGORIES.forEach { name ->
-                addPreference(ListPreference(host).apply {
+                addPreference(Preference(host).apply {
                     key = SettingsContract.categoryModeKey(name)
                     title = name.categoryLabel()
-                    summary = "%s；${host.categorySummary(name)}"
                     isIconSpaceReserved = false
                     widgetLayoutResource = R.layout.preference_widget_chevron
-                    entries = CATEGORY_MODE_LABELS
-                    entryValues = CATEGORY_MODE_VALUES
-                    setDefaultValue(SettingsContract.defaultCategoryMode(name).persistedValue)
+                    fun refreshSummary() {
+                        val prefs = host.modulePreferences()
+                        val mode = CategoryMode.fromPersisted(prefs.getString(key, null), SettingsContract.defaultCategoryMode(name))
+                        val custom = CategoryColors.normalize(prefs.getString(SettingsContract.categoryColorKey(name), ""))
+                        summary = "${CATEGORY_BEHAVIOR_LABELS[mode.ordinal]} · ${custom ?: "默认颜色"}；${host.categorySummary(name)}"
+                    }
+                    refreshSummary()
+                    setOnPreferenceClickListener {
+                        val prefs = host.modulePreferences()
+                        showMaterialCategorySettings(host, name,
+                            CategoryMode.fromPersisted(prefs.getString(key, null), SettingsContract.defaultCategoryMode(name)),
+                            prefs.getString(SettingsContract.categoryColorKey(name), "")) { mode, color ->
+                            prefs.edit().putString(key, mode.persistedValue)
+                                .putString(SettingsContract.categoryColorKey(name), color.orEmpty()).apply()
+                            refreshSummary()
+                        }
+                        true
+                    }
                 })
             }
 
@@ -559,6 +587,8 @@ class SettingsActivity : AppCompatActivity() {
             putString(SettingsContract.KEY_USER_ID, preferences.getString(SettingsContract.KEY_USER_ID, ""))
             putString(SettingsContract.KEY_USERNAME, preferences.getString(SettingsContract.KEY_USERNAME, ""))
             SettingsContract.CATEGORIES.forEach { category ->
+                putString(SettingsContract.categoryColorKey(category),
+                    CategoryColors.normalize(preferences.getString(SettingsContract.categoryColorKey(category), "")).orEmpty())
                 val default = SettingsContract.defaultCategoryMode(category)
                 putString(
                     SettingsContract.categoryModeKey(category),
