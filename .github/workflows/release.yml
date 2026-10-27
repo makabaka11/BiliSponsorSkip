@@ -18,6 +18,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Validate Xposed release token
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.XPOSED_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN}" ]]; then
+            echo "Required Actions secret XPOSED_REPO_TOKEN is not configured." >&2
+            exit 1
+          fi
+
       - name: Check out tag
         uses: actions/checkout@v6
         with:
@@ -205,6 +216,40 @@ jobs:
               --verify-tag \
               --notes-file "${RELEASE_NOTES_FILE}" \
               --title "BiliSponsorSkip ${GITHUB_REF_NAME}"
+          fi
+
+      - name: Publish Xposed Modules Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.XPOSED_REPO_TOKEN }}
+          XPOSED_REPOSITORY: Xposed-Modules-Repo/io.github.makabaka11.bilisponsorskip
+          RELEASE_VERSION: ${{ steps.version.outputs.name }}
+          RELEASE_CODE: ${{ steps.version.outputs.code }}
+          RELEASE_APK: ${{ steps.version.outputs.apk }}
+          RELEASE_NOTES_FILE: ${{ runner.temp }}/release-notes.md
+        run: |
+          set -euo pipefail
+          # Xposed Modules Repo indexes releases by Android versionCode-versionName.
+          release_tag="${RELEASE_CODE}-${RELEASE_VERSION}"
+          if gh release view "${release_tag}" --repo "${XPOSED_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${release_tag}" \
+              "dist/${RELEASE_APK}" \
+              "dist/${RELEASE_APK}.sha256" \
+              --repo "${XPOSED_REPOSITORY}" \
+              --clobber
+            gh release edit "${release_tag}" \
+              --repo "${XPOSED_REPOSITORY}" \
+              --notes-file "${RELEASE_NOTES_FILE}" \
+              --title "${RELEASE_VERSION}"
+          else
+            # Let GitHub create the tag on the destination's default branch.
+            # The source tag/commit is not part of the metadata-only repository.
+            gh release create "${release_tag}" \
+              "dist/${RELEASE_APK}" \
+              "dist/${RELEASE_APK}.sha256" \
+              --repo "${XPOSED_REPOSITORY}" \
+              --notes-file "${RELEASE_NOTES_FILE}" \
+              --title "${RELEASE_VERSION}"
           fi
 
       - name: Commit released changelog
