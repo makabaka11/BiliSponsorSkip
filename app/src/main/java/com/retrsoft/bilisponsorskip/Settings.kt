@@ -9,6 +9,7 @@ import android.os.Bundle
 import de.robv.android.xposed.XSharedPreferences
 
 internal data class SettingsSnapshot(
+    val serverUrl: String = ServerConnection.DEFAULT_URL,
     val enabled: Boolean = true,
     val notifyFound: Boolean = true,
     val notifySkipped: Boolean = true,
@@ -72,6 +73,7 @@ internal class SettingsRepository(
         val persisted = mirrorPreferences.edit()
             .clear()
             .putBoolean(MIRROR_READY, true)
+            .putString(SettingsContract.KEY_SERVER_URL, snapshot.serverUrl)
             .putBoolean(SettingsContract.KEY_ENABLED, snapshot.enabled)
             .putBoolean(SettingsContract.KEY_NOTIFY_FOUND, snapshot.notifyFound)
             .putBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, snapshot.notifySkipped)
@@ -208,6 +210,7 @@ internal class SettingsRepository(
         getString: (String, String) -> String,
         contains: (String) -> Boolean,
     ) = SettingsSnapshot(
+        serverUrl = ServerConnection.normalize(getString(SettingsContract.KEY_SERVER_URL, ServerConnection.DEFAULT_URL)) ?: ServerConnection.DEFAULT_URL,
         enabled = getBoolean(SettingsContract.KEY_ENABLED, true),
         notifyFound = getBoolean(SettingsContract.KEY_NOTIFY_FOUND, true),
         notifySkipped = getBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, true),
@@ -256,6 +259,7 @@ internal class SettingsRepository(
 
 internal object SettingsContract {
     const val MODULE_PACKAGE = "com.retrsoft.bilisponsorskip"
+    const val KEY_SERVER_URL = "server_url"
     const val KEY_ENABLED = "enabled"
     const val KEY_AUTO_SKIP = "auto_skip"
     const val KEY_NOTIFY_FOUND = "notify_found"
@@ -333,6 +337,7 @@ internal object SettingsContract {
     }
 
     fun settingsBundle(snapshot: SettingsSnapshot) = Bundle().apply {
+        putString(KEY_SERVER_URL, snapshot.serverUrl)
         putBoolean(KEY_ENABLED, snapshot.enabled)
         putBoolean(KEY_NOTIFY_FOUND, snapshot.notifyFound)
         putBoolean(KEY_NOTIFY_SKIPPED, snapshot.notifySkipped)
@@ -362,7 +367,7 @@ internal object SettingsContract {
     )
 
     val STRING_SETTING_KEYS: List<String>
-        get() = listOf(KEY_MIN_DURATION, KEY_USER_ID, KEY_USERNAME) +
+        get() = listOf(KEY_SERVER_URL, KEY_MIN_DURATION, KEY_USER_ID, KEY_USERNAME) +
             CATEGORIES.map(::categoryModeKey) + CATEGORIES.map(::categoryColorKey)
 
     fun sourceStatsKey(source: String, value: String) = "$KEY_LOCAL_STATS_SOURCE_PREFIX${source}_$value"

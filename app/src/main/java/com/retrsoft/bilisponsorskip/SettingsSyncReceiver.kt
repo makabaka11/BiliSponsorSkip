@@ -51,6 +51,7 @@ class SettingsSyncReceiver : BroadcastReceiver() {
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
         val defaults = SettingsSnapshot()
         val snapshot = defaults.copy(
+            serverUrl = ServerConnection.normalize(preferences.getString(SettingsContract.KEY_SERVER_URL, defaults.serverUrl).orEmpty()) ?: defaults.serverUrl,
             enabled = preferences.getBoolean(SettingsContract.KEY_ENABLED, defaults.enabled),
             notifyFound = preferences.getBoolean(SettingsContract.KEY_NOTIFY_FOUND, defaults.notifyFound),
             notifySkipped = preferences.getBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, defaults.notifySkipped),

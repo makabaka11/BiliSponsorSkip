@@ -167,6 +167,7 @@ private class EmbeddedSettingsDialog(
     private val settings: SettingsRepository,
 ) {
     private val initial = settings.refresh()
+    private var serverUrl = initial.serverUrl
     private val colors = embeddedSettingsColors(isDarkDialogTheme(activity))
     private val switches = linkedMapOf<String, Switch>()
     private val categoryModes = initial.categoryModes.toMutableMap()
@@ -198,6 +199,14 @@ private class EmbeddedSettingsDialog(
         }
         body.addView(spinnerRow("最短片段时长", "更短的片段不会提示或跳过", minimumDurationSpinner))
 
+        body.addView(section("服务器连接"))
+        val serverRow = actionRow("选择接入点与测试延迟", "支持官方地址和自定义地址；保存设置后生效") {
+            showServerConnectionDialog(activity, serverUrl) { url ->
+                serverUrl = url
+                Toast.makeText(activity, "已选择 $url，保存设置后生效", Toast.LENGTH_SHORT).show()
+            }
+        }
+        body.addView(serverRow)
         body.addView(section("片段提交与投票"))
         addSwitch(
             body,
@@ -310,6 +319,7 @@ private class EmbeddedSettingsDialog(
             else -> Identity.generate()
         }
         val saved = initial.copy(
+                serverUrl = serverUrl,
                 enabled = switch(SettingsContract.KEY_ENABLED),
                 notifyFound = switch(SettingsContract.KEY_NOTIFY_FOUND),
                 notifySkipped = switch(SettingsContract.KEY_NOTIFY_SKIPPED),
@@ -440,7 +450,7 @@ private class EmbeddedSettingsDialog(
             return
         }
         Thread({
-            val result = SponsorBlockClient().setUsername(saved.userId, saved.username)
+            val result = SponsorBlockClient { settings.current.serverUrl }.setUsername(saved.userId, saved.username)
             activity.runOnUiThread {
                 if (result.successful) {
                     Toast.makeText(activity, "用户名已更新", Toast.LENGTH_SHORT).show()
@@ -472,7 +482,7 @@ private class EmbeddedSettingsDialog(
         }
         remoteStatsText.text = "正在加载您的贡献数据…"
         Thread({
-            val result = SponsorBlockClient().getUserContributionStats(userId)
+            val result = SponsorBlockClient { settings.current.serverUrl }.getUserContributionStats(userId)
             activity.runOnUiThread {
                 remoteStatsText.text = when (result) {
                     is SponsorBlockClient.UserStatsResult.Success ->

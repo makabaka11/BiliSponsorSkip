@@ -155,6 +155,26 @@ class SettingsActivity : AppCompatActivity() {
                 setDefaultValue("0")
             })
 
+            addPreference(category("服务器连接"))
+            addPreference(Preference(host).apply {
+                title = "服务器连接"
+                isIconSpaceReserved = false
+                widgetLayoutResource = R.layout.preference_widget_chevron
+                fun refreshServer() {
+                    summary = host.modulePreferences().getString(SettingsContract.KEY_SERVER_URL, ServerConnection.DEFAULT_URL)
+                }
+                refreshServer()
+                setOnPreferenceClickListener {
+                    showServerConnectionDialog(host, summary.toString()) { url ->
+                        host.modulePreferences().edit().putString(SettingsContract.KEY_SERVER_URL, url).apply()
+                        refreshServer()
+                        host.ensureUserId()
+                        loadRemoteStats()
+                    }
+                    true
+                }
+            })
+
             addPreference(category("片段提交与投票"))
             addPreference(toggle(SettingsContract.KEY_SHOW_SUBMISSION_BUTTON, "显示提交按钮",
                 "在视频播放器控制栏显示片段提交与投票入口", false))
@@ -366,7 +386,7 @@ class SettingsActivity : AppCompatActivity() {
                 return
             }
             Thread({
-                val result = SponsorBlockClient().getUserContributionStats(userId)
+                val result = SponsorBlockClient { host.modulePreferences().getString(SettingsContract.KEY_SERVER_URL, ServerConnection.DEFAULT_URL).orEmpty() }.getUserContributionStats(userId)
                 host.runOnUiThread {
                     val elapsed = SystemClock.uptimeMillis() - remoteLoadingStartedAt
                     val remaining = (MINIMUM_LOADING_VISIBLE_MS - elapsed).coerceAtLeast(0L)
@@ -503,7 +523,7 @@ class SettingsActivity : AppCompatActivity() {
 
         userIdGenerationInProgress = true
         Thread({
-            val client = SponsorBlockClient()
+            val client = SponsorBlockClient { modulePreferences().getString(SettingsContract.KEY_SERVER_URL, ServerConnection.DEFAULT_URL).orEmpty() }
             var failureMessage: String? = null
             var cleanUserId: String? = null
             for (attempt in 1..MAX_USER_ID_GENERATION_ATTEMPTS) {
@@ -575,6 +595,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun settingsBundle(): Bundle {
         val preferences = modulePreferences()
         return Bundle().apply {
+            putString(SettingsContract.KEY_SERVER_URL, preferences.getString(SettingsContract.KEY_SERVER_URL, ServerConnection.DEFAULT_URL))
             putBoolean(SettingsContract.KEY_ENABLED, preferences.getBoolean(SettingsContract.KEY_ENABLED, true))
             putBoolean(SettingsContract.KEY_NOTIFY_FOUND, preferences.getBoolean(SettingsContract.KEY_NOTIFY_FOUND, true))
             putBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, preferences.getBoolean(SettingsContract.KEY_NOTIFY_SKIPPED, true))
@@ -628,7 +649,7 @@ class SettingsActivity : AppCompatActivity() {
         val userId = modulePreferences().getString(SettingsContract.KEY_USER_ID, "").orEmpty()
         if (!Identity.isValid(userId)) return toast("私有用户 ID 尚未就绪")
         Thread({
-            val result = SponsorBlockClient().setUsername(userId, value)
+            val result = SponsorBlockClient { modulePreferences().getString(SettingsContract.KEY_SERVER_URL, ServerConnection.DEFAULT_URL).orEmpty() }.setUsername(userId, value)
             runOnUiThread {
                 if (result.successful) {
                     preference.summary = usernameSummary(value)

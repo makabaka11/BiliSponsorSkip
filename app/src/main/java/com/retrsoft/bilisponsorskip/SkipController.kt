@@ -15,8 +15,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 internal class SkipController(
-    private val client: SponsorBlockClient = SponsorBlockClient(),
     private val settings: SettingsRepository,
+    private val client: SponsorBlockClient = SponsorBlockClient { settings.current.serverUrl },
     private val localStatsStore: LocalSkipStatsStore,
 ) {
     data class VideoKey(val bvid: String, val cid: String)
@@ -82,8 +82,18 @@ internal class SkipController(
     @Volatile
     private var activeManualNoticeKey: String? = null
 
+    @Volatile
+    private var configuredServer = settings.current.serverUrl
+
     init {
-        settings.onSettingsChanged = ::notifyUiStateChanged
+        settings.onSettingsChanged = {
+            if (configuredServer != settings.current.serverUrl) {
+                configuredServer = settings.current.serverUrl
+                segmentCache.clear()
+                retryAfter.clear()
+            }
+            notifyUiStateChanged()
+        }
     }
 
     fun addUiStateListener(listener: () -> Unit) {
@@ -250,7 +260,12 @@ internal class SkipController(
             return
         }
         executor.execute {
+            val requestedServer = settings.current.serverUrl
             val result = client.getSponsorSegments(key.bvid, key.cid)
+            if (requestedServer != settings.current.serverUrl) {
+                mainHandler.post { callback(SponsorBlockClient.Result.Failure(false, "刷新期间服务器已切换，请重试")) }
+                return@execute
+            }
             if (result is SponsorBlockClient.Result.Success) {
                 segmentCache[key] = result.segments
                 retryAfter.remove(key)
@@ -433,6 +448,7 @@ internal class SkipController(
         if (segmentCache.containsKey(key) || !loading.add(key)) return
         executor.execute {
             try {
+                val requestedServer = settings.current.serverUrl
                 var attempt = 0
                 var result: SponsorBlockClient.Result
                 do {
@@ -443,6 +459,7 @@ internal class SkipController(
                     }
                 } while (result is SponsorBlockClient.Result.Failure && result.retryable && attempt < MAX_ATTEMPTS)
 
+                if (requestedServer != settings.current.serverUrl) return@execute
                 when (result) {
                     is SponsorBlockClient.Result.Success -> {
                         retryAfter.remove(key)

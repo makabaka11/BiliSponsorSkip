@@ -7,7 +7,10 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.security.MessageDigest
 
-internal class SponsorBlockClient {
+internal class SponsorBlockClient(
+    private val serverUrl: () -> String = { ServerConnection.DEFAULT_URL },
+) {
+    private val server: String get() = ServerConnection.normalize(serverUrl()) ?: ServerConnection.DEFAULT_URL
     data class UserContributionStats(
         val viewCount: Long,
         val minutesSaved: Double,
@@ -39,7 +42,7 @@ internal class SponsorBlockClient {
 
     fun getSponsorSegments(bvid: String, cid: String): Result {
         val prefix = sha256(bvid.trim()).take(4)
-        val connection = URI.create("$BASE_URL$prefix").toURL().openConnection() as HttpURLConnection
+        val connection = URI.create("$server/api/skipSegments/$prefix").toURL().openConnection() as HttpURLConnection
         return try {
             connection.requestMethod = "GET"
             connection.connectTimeout = 10_000
@@ -75,7 +78,7 @@ internal class SponsorBlockClient {
         durationMs: Int,
     ): MutationResult {
         val body = createSubmitPayload(bvid, cid, userId, category, startMs, endMs, durationMs)
-        return executeMutation("$SERVER_URL/api/skipSegments", body.toString())
+        return executeMutation("$server/api/skipSegments", body.toString())
     }
 
     internal fun createSubmitPayload(
@@ -107,22 +110,23 @@ internal class SponsorBlockClient {
     }
 
     fun vote(uuid: String, userId: String, type: Int): MutationResult {
-        val url = "$SERVER_URL/api/voteOnSponsorTime" +
+        val url = "$server/api/voteOnSponsorTime" +
             "?UUID=${urlEncode(uuid)}&userID=${urlEncode(userId)}&type=$type"
         return executeMutation(url, body = null)
     }
 
     fun setUsername(userId: String, username: String): MutationResult {
-        val url = "$SERVER_URL/api/setUsername" +
+        val url = "$server/api/setUsername" +
             "?userID=${urlEncode(userId)}&username=${urlEncode(username)}"
         return executeMutation(url, body = null)
     }
 
     fun getUserContributionStats(userId: String): UserStatsResult {
+        val server = this.server
         val encoded = urlEncode(userId)
-        val views = executeUserStatRequest("$SERVER_URL/api/getViewsForUser?userID=$encoded", "viewCount")
+        val views = executeUserStatRequest("$server/api/getViewsForUser?userID=$encoded", "viewCount")
         if (views is NumericStatResult.Failure) return UserStatsResult.Failure(views.message)
-        val saved = executeUserStatRequest("$SERVER_URL/api/getSavedTimeForUser?userID=$encoded", "timeSaved")
+        val saved = executeUserStatRequest("$server/api/getSavedTimeForUser?userID=$encoded", "timeSaved")
         if (saved is NumericStatResult.Failure) return UserStatsResult.Failure(saved.message)
         return UserStatsResult.Success(UserContributionStats(
             viewCount = (views as NumericStatResult.Success).value.toLong().coerceAtLeast(0L),
@@ -228,8 +232,6 @@ internal class SponsorBlockClient {
     private fun urlEncode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
 
     private companion object {
-        const val SERVER_URL = "https://www.bsbsb.top"
-        const val BASE_URL = "$SERVER_URL/api/skipSegments/"
         const val CLIENT_VERSION = "0.2.4"
     }
 }
