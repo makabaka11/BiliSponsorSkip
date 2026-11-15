@@ -13,6 +13,8 @@ import android.os.Handler
 import android.os.Looper
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.Editable
+import android.text.TextWatcher
 import android.text.style.ReplacementSpan
 import android.view.View
 import android.view.ViewGroup
@@ -31,14 +33,14 @@ internal class PlayerUiInjector(
     private val controller: SkipController,
 ) {
     private data class TitleState(
-        val originalDrawables: Array<Drawable?>,
         val originalDrawablePadding: Int,
         val drawable: TitleLabelDrawable?,
-        val originalText: CharSequence?,
         val inlineSpan: TitleLabelSpan?,
         val video: SkipController.VideoKey,
         val label: String,
         val color: Int,
+        val textWatcher: TextWatcher,
+        val attachListener: View.OnAttachStateChangeListener,
     )
 
     private data class MarkerState(
@@ -51,6 +53,7 @@ internal class PlayerUiInjector(
     private val titleStates = WeakHashMap<TextView, TitleState>()
     private val markerStates = WeakHashMap<View, MarkerState>()
     private val loggedProgressClasses = mutableSetOf<String>()
+    private val reportedStoryBindings = mutableSetOf<String>()
 
     private var cachedTitleVideo: SkipController.VideoKey? = null
     private var cachedVideoTitle: String? = null
@@ -175,6 +178,19 @@ internal class PlayerUiInjector(
                     (!expectedTitle.isNullOrBlank() &&
                         view.contentDescription?.toString()?.normalizedTitle() == expectedTitle)
             }
+            .filter { view ->
+                if (view.javaClass.name !in STORY_TITLE_CLASSES) return@filter true
+                val bound = resolveStoryTitleIdentity(
+                    view,
+                    requireActive = view.javaClass.name == STORY_TITLE_CLASS,
+                ) { detail ->
+                    val diagnostic = "${view.javaClass.name}: $detail"
+                    if (reportedStoryBindings.add(diagnostic)) {
+                        Log.d("story title binding unsupported or ambiguous: $diagnostic")
+                    }
+                }
+                bound?.bvid == video.bvid && bound.cid == video.cid
+            }
             .toSet()
         if (titleTargets.isEmpty()) {
             clearTitleLabels()
@@ -214,23 +230,6 @@ internal class PlayerUiInjector(
             existingState.color == color &&
             isTitleStateApplied(title, existingState)
         ) return
-
-        if (existingState?.video == video && existingState.label == label && existingState.color == color) {
-            if (useInlineSpan) {
-                restoreTitle(title)
-                applyInlineTitleLabel(title, video, label, category)
-            } else {
-                title.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                    existingState.drawable,
-                    existingState.originalDrawables[1],
-                    existingState.originalDrawables[2],
-                    existingState.originalDrawables[3],
-                )
-                title.compoundDrawablePadding = existingState.originalDrawablePadding +
-                    (TITLE_DRAWABLE_GAP_DP * title.resources.displayMetrics.density).toInt()
-            }
-            return
-        }
 
         restoreTitle(title)
         if (useInlineSpan) {
@@ -277,14 +276,14 @@ internal class PlayerUiInjector(
             ?.firstOrNull()
             ?: return
         titleStates[title] = TitleState(
-            originalDrawables = title.compoundDrawablesRelative.copyOf(),
             originalDrawablePadding = title.compoundDrawablePadding,
             drawable = null,
-            originalText = originalText,
             inlineSpan = appliedSpan,
             video = video,
             label = label,
             color = categoryColor(category, preview = true),
+            textWatcher = watchTitleText(title),
+            attachListener = watchTitleAttachment(title),
         )
     }
 
@@ -294,7 +293,7 @@ internal class PlayerUiInjector(
         label: String,
         category: String,
     ) {
-        val originalDrawables = title.compoundDrawablesRelative.copyOf()
+        val originalDrawables = title.compoundDrawablesRelative.map(::unwrapTitleDrawable).toTypedArray()
         val drawable = TitleLabelDrawable(
             host = title,
             label = label,
@@ -311,16 +310,42 @@ internal class PlayerUiInjector(
         title.compoundDrawablePadding = originalPadding +
             (TITLE_DRAWABLE_GAP_DP * title.resources.displayMetrics.density).toInt()
         titleStates[title] = TitleState(
-            originalDrawables = originalDrawables,
             originalDrawablePadding = originalPadding,
             drawable = drawable,
-            originalText = null,
             inlineSpan = null,
             video = video,
             label = label,
             color = categoryColor(category, preview = true),
+            textWatcher = watchTitleText(title),
+            attachListener = watchTitleAttachment(title),
         )
     }
+
+    private fun watchTitleText(title: TextView): TextWatcher {
+        val host = WeakReference(title)
+        return object : TextWatcher {
+            override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(text: Editable?) {
+                if (suppressExpandableTitleHook) return
+                // setText does not clear compound drawables when a recycled Story title is rebound.
+                host.get()?.let(::restoreTitle)
+                requestImmediateRender()
+            }
+        }.also(title::addTextChangedListener)
+    }
+
+    private fun watchTitleAttachment(title: TextView): View.OnAttachStateChangeListener {
+        return object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) = requestImmediateRender()
+            override fun onViewDetachedFromWindow(view: View) {
+                (view as? TextView)?.let(::restoreTitle)
+            }
+        }.also(title::addOnAttachStateChangeListener)
+    }
+
+    private fun unwrapTitleDrawable(drawable: Drawable?): Drawable? =
+        if (drawable is TitleLabelDrawable) unwrapTitleDrawable(drawable.leadingDrawable) else drawable
 
     private fun isVideoTitle(view: TextView): Boolean {
         if (!view.isShown || view.text.isBlank()) return false
@@ -557,26 +582,32 @@ internal class PlayerUiInjector(
 
     private fun restoreTitle(view: TextView) {
         val state = titleStates.remove(view) ?: return
+        view.removeTextChangedListener(state.textWatcher)
+        view.removeOnAttachStateChangeListener(state.attachListener)
         state.inlineSpan?.let {
             if (isTitleStateApplied(view, state)) {
                 suppressExpandableTitleHook = true
                 try {
-                    view.text = state.originalText
+                    // Keep the host's latest title and spans if it edited/reused our text.
+                    view.text = stripInlineTitleLabels(view.text)
                 } finally {
                     suppressExpandableTitleHook = false
                 }
             }
             return
         }
-        if (view.compoundDrawablesRelative[0] === state.drawable) {
+        val current = view.compoundDrawablesRelative
+        val clean = current.map(::unwrapTitleDrawable)
+        if (current.indices.any { current[it] !== clean[it] }) {
             view.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                state.originalDrawables[0],
-                state.originalDrawables[1],
-                state.originalDrawables[2],
-                state.originalDrawables[3],
+                clean[0], clean[1], clean[2], clean[3],
             )
         }
-        view.compoundDrawablePadding = state.originalDrawablePadding
+        val injectedPadding = state.originalDrawablePadding +
+            (TITLE_DRAWABLE_GAP_DP * view.resources.displayMetrics.density).toInt()
+        if (view.compoundDrawablePadding == injectedPadding) {
+            view.compoundDrawablePadding = state.originalDrawablePadding
+        }
     }
 
     private fun removeProgressMarkersExcept(keep: Set<View>) {
@@ -738,7 +769,7 @@ internal class PlayerUiInjector(
         host: TextView,
         private val label: String,
         private val backgroundColor: Int,
-        private val leadingDrawable: Drawable?,
+        val leadingDrawable: Drawable?,
     ) : Drawable() {
         private val density = host.resources.displayMetrics.density
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -913,6 +944,11 @@ internal class PlayerUiInjector(
             "com.bilibili.playerbizcommon.widget.control.HighEnergySeekWidget"
         const val PLAYER_SEEK_PACKAGE_PREFIX = "com.bilibili.playerbizcommonv2.widget.seek."
         const val STORY_SEEK_BAR_CLASS = "com.bilibili.video.story.view.StorySeekBar"
+        const val STORY_TITLE_CLASS = "com.bilibili.video.story.action.widget.StoryTitleWidget"
+        val STORY_TITLE_CLASSES = setOf(
+            STORY_TITLE_CLASS,
+            "com.bilibili.video.story.action.widget.StoryLandscapeTitleWidget",
+        )
         val PLAYER_TITLE_CLASSES = setOf(
             "com.bilibili.app.gemini.player.widget.base.GeminiPlayerTitleWidget",
             "com.bilibili.playerbizcommon.widget.control.PlayerTitleWidget",
